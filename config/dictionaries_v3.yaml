@@ -1,0 +1,225 @@
+# Phrase-tier dictionaries for PsychoFilm Analyzer v3
+# t3 = strong multi-word, t2 = medium, t1 = weak (needs co-occurrence unless allow_t1_alone)
+
+clusters:
+  adolescence_identity:
+    name: "Adolescence & Identity Formation"
+    phrases:
+      t3: ["coming of age", "identity crisis", "queer identity", "gender identity", "self-discovery", "rite of passage"]
+      t2: ["adolescence", "bildungsroman", "first love", "peer pressure", "youth", "teenager", "взросление", "идентичность", "самоопределение"]
+      t1: ["identity", "teen", "school"]
+  childhood_trauma:
+    name: "Childhood / Transgenerational Trauma"
+    phrases:
+      t3: ["childhood trauma", "generational trauma", "intergenerational trauma", "child abuse", "repressed memory", "domestic violence"]
+      t2: ["childhood", "ptsd", "orphan", "family secret", "attachment trauma", "травм", "насили", "жестокост", "детск"]
+      t1: ["abuse", "neglect"]
+  madness_psychosis:
+    name: "Madness, Psychosis & Borderline States"
+    phrases:
+      t3: ["mental breakdown", "unreliable narrator", "multiple personality", "dissociative identity", "psychological thriller", "psychological drama"]
+      t2: ["psychosis", "schizophrenia", "hallucination", "paranoia", "dissociative", "insanity", "madness", "psychiatric", "психоз", "безумие", "шизофрен", "паранои"]
+      t1: ["delusion", "asylum", "borderline"]
+  jungian_shadow:
+    name: "Jungian Shadow, Persona & Individuation"
+    phrases:
+      t3: ["collective unconscious", "jungian", "individuation", "doppelganger", "doppelgänger", "alter ego", "dream logic"]
+      t2: ["archetype", "shadow self", "anima", "animus", "surrealist", "surreal", "mythic", "архетип", "индивидуац", "сюрреал"]
+      t1: ["shadow", "symbolic", "mask"]
+  family_attachment:
+    name: "Family Systems, Attachment & Parental Complexes"
+    phrases:
+      t3: ["dysfunctional family", "family system", "mother complex", "father complex", "parental", "family trauma"]
+      t2: ["family", "attachment", "sibling", "divorce", "mother", "father", "сем", "родитель", "привязанност", "мать", "отец"]
+      t1: ["home", "parent"]
+  existential_midlife:
+    name: "Existential Crisis, Meaning, Death & Midlife"
+    phrases:
+      t3: ["existential crisis", "meaning of life", "midlife crisis", "fear of death", "sense of purpose"]
+      t2: ["existential", "mortality", "nihilism", "loneliness", "isolation", "grief", "bereavement", "absurd", "экзистенц", "смысл", "одиночеств", "нигилизм"]
+      t1: ["freedom", "regret", "aging"]
+  collective_power:
+    name: "Collective Unconscious, Power & Historical Psychotypes"
+    phrases:
+      t3: ["collective guilt", "historical trauma", "mass psychology", "totalitarian", "war crime", "genocide"]
+      t2: ["propaganda", "fascism", "authoritarian", "ideology", "oppression", "revolution", "war", "тоталитар", "идеолог", "пропаганд", "власть"]
+      t1: ["power", "nation", "soldier"]
+
+scores:
+  Psychological_Depth:
+    phrases:
+      t3: ["psychological drama", "character study", "inner conflict", "moral ambiguity", "unreliable narrator", "psychological complexity"]
+      t2: ["psychological", "subtext", "trauma", "identity", "consciousness", "психолог", "внутренн"]
+      t1: ["drama", "драма"]
+  Trauma_Clinical_Relevance:
+    phrases:
+      t3: ["childhood trauma", "post-traumatic", "ptsd", "war trauma", "sexual abuse", "grief and loss"]
+      t2: ["trauma", "abuse", "survivor", "mourning", "bereavement", "травм", "горе", "насили"]
+      t1: ["loss", "pain"]
+  Identity_Transformation:
+    phrases:
+      t3: ["identity crisis", "becomes someone", "self-discovery", "coming of age", "reinvention"]
+      t2: ["transformation", "identity", "becoming", "metamorphosis", "идентичность", "превращен"]
+      t1: ["change", "grow"]
+  Madness_Altered_States:
+    phrases:
+      t3: ["mental illness", "nervous breakdown", "dissociative", "hallucinations", "descent into madness"]
+      t2: ["madness", "insanity", "psychosis", "delusion", "paranoia", "безумие", "психоз"]
+      t1: ["crazy", "mad"]
+  Family_Systems_Complexity:
+    phrases:
+      t3: ["family dynamics", "dysfunctional family", "parent-child", "family secret"]
+      t2: ["family", "mother", "father", "sibling", "сем", "родитель"]
+      t1: ["home"]
+  Existential_Weight:
+    phrases:
+      t3: ["meaning of life", "existential crisis", "confrontation with death", "search for meaning"]
+      t2: ["existential", "mortality", "nihilism", "absurd", "purpose", "экзистенц", "смысл"]
+      t1: ["death", "alone"]
+  Collective_Historical_Psychotype:
+    phrases:
+      t3: ["historical trauma", "totalitarian regime", "war atrocity", "collective memory"]
+      t2: ["war", "occupation", "genocide", "fascism", "propaganda", "revolution", "войн", "тоталитар"]
+      t1: ["history", "soldier"]
+  Narrative_Craft:
+    phrases:
+      t3: ["nonlinear narrative", "unreliable narrator", "multiple timelines", "formal experiment"]
+      t2: ["flashback", "montage", "structure", "screenplay", "cinematic", "slow burn"]
+      t1: ["directed", "filmmaking"]
+  Discussability_Podcast_Potential:
+    phrases:
+      t3: ["open to interpretation", "ambiguous ending", "moral ambiguity", "polarizing"]
+      t2: ["controversial", "debated", "ambiguity", "cult film", "thought-provoking"]
+      t1: ["complex", "layered"]
+  Spiritual_Religious_Mystical_Depth:
+    phrases:
+      t3: ["spiritual journey", "religious faith", "mystical experience", "divine", "sacred ritual"]
+      t2: ["prayer", "faith", "god", "religion", "soul", "spirit", "sacred", "miracle", "духовн", "религ", "бог", "душа"]
+      t1: ["church", "temple", "monk"]
+  Purpose_Destiny_Meaning_of_Life:
+    phrases:
+      t3: ["sense of destiny", "life purpose", "calling", "meaning of life"]
+      t2: ["destiny", "fate", "purpose", "vocation", "mission", "судьб", "предназнач", "смысл жизни"]
+      t1: ["chosen", "path"]
+  Archetypal_Mythic_Resonance:
+    phrases:
+      t3: ["hero's journey", "collective unconscious", "archetypal", "mythic quest"]
+      t2: ["archetype", "myth", "hero", "shadow", "trickster", "quest", "архетип", "миф"]
+      t1: ["legend", "epic"]
+  Fairy_Tale_Folklore_Mystical_Density:
+    phrases:
+      t3: ["fairy tale", "folk tale", "spirit world", "coming-of-age fantasy"]
+      t2: ["folklore", "witch", "magic", "enchanted", "forest spirit", "сказк", "фольклор", "волшеб"]
+      t1: ["fairy", "ghost", "spirit"]
+  Intellectual_Scientific_Complexity:
+    phrases:
+      t3: ["scientific theory", "philosophical debate", "quantum", "linguistics", "artificial intelligence"]
+      t2: ["science", "physics", "philosophy", "mathematics", "research", "наук", "философ"]
+      t1: ["theory", "experiment"]
+  machine_nature:
+    phrases:
+      t2: ["machine", "biology", "genetic", "chemical", "deterministic", "animal instinct", "brain chemistry"]
+      t1: ["body", "flesh", "instinct"]
+  spiritual_nature:
+    phrases:
+      t2: ["soul", "spirit", "transcendence", "divine spark", "consciousness beyond", "душа", "дух"]
+      t1: ["sacred", "holy"]
+
+field_maps:
+  archetypes:
+    Hero: ["hero", "savior", "champion"]
+    Shadow: ["shadow", "dark side", "repressed"]
+    Anima_Animus: ["anima", "animus"]
+    Trickster: ["trickster", "jester", "fool"]
+    Wise_Elder: ["wise old", "mentor", "sage", "guru"]
+    Orphan: ["orphan", "abandoned child"]
+    Caregiver: ["caregiver", "nurse", "mother figure"]
+    Explorer: ["explorer", "wanderer", "journey"]
+  trauma_types:
+    Developmental: ["childhood trauma", "child abuse", "neglect"]
+    War: ["war trauma", "combat", "occupation", "genocide"]
+    Loss_Grief: ["grief", "bereavement", "mourning", "loss of"]
+    Sexual_Abuse: ["sexual abuse", "rape", "incest"]
+    Systemic: ["oppression", "totalitarian", "poverty", "racism"]
+  defenses:
+    Denial: ["denial", "refuses to accept"]
+    Projection: ["projection", "projects"]
+    Dissociation: ["dissociation", "dissociative", "numb"]
+    Repression: ["repression", "repressed memory"]
+    Intellectualization: ["intellectualization", "rationalizes"]
+  attachment:
+    Anxious: ["cling", "abandonment fear", "anxious attachment"]
+    Avoidant: ["emotionally distant", "avoidant", "withdraws"]
+    Disorganized: ["disorganized attachment", "chaotic bond"]
+    Enmeshed: ["enmeshment", "enmeshed", "no boundaries"]
+  surface_conflicts:
+    War_Survival: ["war", "battle", "occupation", "survival"]
+    Revenge: ["revenge", "vengeance"]
+    Crime_Heist: ["heist", "robbery", "crime", "murder investigation"]
+    Romance_Barrier: ["forbidden love", "star-crossed", "love affair"]
+    Power_Struggle: ["coup", "power struggle", "political intrigue"]
+    Man_vs_Nature: ["wilderness", "disaster", "storm", "survival in"]
+    Identity_Quest: ["search for identity", "who am i", "find himself", "find herself"]
+  resolution_types:
+    Tragic: ["tragic ending", "dies", "no hope", "doomed"]
+    Transformative: ["redemption", "transformed", "healed", "forgiven"]
+    Ambiguous: ["ambiguous ending", "open ending", "uncertain"]
+    Circular: ["returns to", "cycle continues", "nothing changes"]
+    Unresolved: ["unresolved", "left open", "no resolution"]
+  narrative_structure:
+    Nonlinear: ["nonlinear", "non-linear", "fragmented narrative"]
+    Multi_Timeline: ["multiple timelines", "parallel stories"]
+    Flashback: ["flashback", "flashbacks"]
+    Episodic: ["episodic", "vignettes"]
+    Classical: ["three-act", "classical structure"]
+  religious_traditions:
+    Christian: ["christian", "church", "priest", "christ", "bible", "gospel"]
+    Buddhist: ["buddhist", "buddha", "zen", "monastery"]
+    Jewish: ["jewish", "synagogue", "rabbi", "holocaust"]
+    Islamic: ["islam", "muslim", "mosque", "quran"]
+    Pagan_Folk: ["pagan", "folk religion", "shinto", "spirit worship"]
+    Mystical_Generic: ["mystical", "occult", "esoteric", "kabbalah"]
+  life_stages:
+    Adolescence: ["teen", "adolescent", "coming of age", "high school"]
+    Young_Adult: ["college", "first job", "young adult"]
+    Midlife: ["midlife", "middle-aged", "marriage crisis"]
+    Elder: ["old age", "elderly", "dying", "retirement"]
+    All_Ages: ["family film", "all ages", "children"]
+  folklore_motifs:
+    Forest_Journey: ["forest", "woods", "lost in"]
+    Witch_Helper: ["witch", "crone", "fairy godmother"]
+    Magical_Creature: ["spirit", "dragon", "creature", "totoro", "yokai"]
+    Threshold: ["portal", "other world", "underworld"]
+    Initiation: ["initiation", "trial", "ordeal", "test"]
+  subject_scores:
+    Moral_Philosophy_Ethical_Dilemmas:
+      t2: ["ethical", "moral dilemma", "what is right", "conscience"]
+    Power_Corruption_Dynamics:
+      t2: ["corruption", "abuse of power", "tyrant", "dictator"]
+    Technology_vs_Humanity_Transhumanism:
+      t2: ["artificial intelligence", "robot", "cyborg", "technology", "transhuman"]
+    Nature_Cosmos_Sacred:
+      t2: ["cosmos", "universe", "nature", "wilderness", "stars"]
+    Time_Memory_Narrative_Identity:
+      t2: ["memory", "time travel", "remember", "amnesia", "past"]
+    Forms_of_Love:
+      t2: ["romantic love", "maternal love", "friendship", "eros", "agape"]
+    Sacrifice_Redemption:
+      t2: ["sacrifice", "redemption", "atonement", "forgives"]
+    Humor_as_Insight_or_Defense:
+      t2: ["dark comedy", "satire", "ironic", "humor as"]
+    Body_Embodiment:
+      t2: ["body", "embodiment", "disability", "illness", "flesh"]
+  triggers:
+    Violence: ["violence", "murder", "torture", "blood", "massacre"]
+    Sexual_Content: ["sexual", "rape", "erotic", "incest"]
+    Self_Harm: ["suicide", "self-harm", "self harm"]
+    Abuse: ["abuse", "molest", "domestic violence"]
+    War_Horror: ["war crime", "genocide", "holocaust", "atrocity"]
+
+caps:
+  spectacle_psych_max: 4.0
+  documentary_psych_max: 5.5
+  primary_min: 3.0
+  secondary_min: 2.0
+  secondary_ratio: 0.5

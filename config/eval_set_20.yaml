@@ -1,0 +1,24 @@
+# Diversity evaluation set for PsychoFilm Analyzer v3
+# Gather-first: run `python run.py gather --eval-set` then review profiles.
+
+films:
+  - { title: "Mulholland Drive", year: 2001, english_title: "Mulholland Drive", tag: "madness_identity" }
+  - { title: "Persona", year: 1966, english_title: "Persona", tag: "identity_madness" }
+  - { title: "Mirror", year: 1975, english_title: "Mirror", russian_title: "Зеркало", tag: "family_existential" }
+  - { title: "The Sacrifice", year: 1986, english_title: "The Sacrifice", tag: "spiritual_destiny" }
+  - { title: "Stalker", year: 1979, english_title: "Stalker", tag: "destiny_existential" }
+  - { title: "Come and See", year: 1985, english_title: "Come and See", tag: "trauma_historical" }
+  - { title: "Night and Fog", year: 1956, english_title: "Night and Fog", tag: "doc_historical" }
+  - { title: "Ordinary People", year: 1980, english_title: "Ordinary People", tag: "trauma_family" }
+  - { title: "Manchester by the Sea", year: 2016, english_title: "Manchester by the Sea", tag: "grief_family" }
+  - { title: "Moonlight", year: 2016, english_title: "Moonlight", tag: "identity_family" }
+  - { title: "The Piano Teacher", year: 2001, english_title: "The Piano Teacher", tag: "trauma_madness" }
+  - { title: "Fight Club", year: 1999, english_title: "Fight Club", tag: "identity_madness" }
+  - { title: "Eternal Sunshine of the Spotless Mind", year: 2004, english_title: "Eternal Sunshine of the Spotless Mind", tag: "memory_identity" }
+  - { title: "Arrival", year: 2016, english_title: "Arrival", tag: "science_destiny" }
+  - { title: "Interstellar", year: 2014, english_title: "Interstellar", tag: "science_family" }
+  - { title: "Spirited Away", year: 2001, english_title: "Spirited Away", tag: "fairy_identity" }
+  - { title: "Pan's Labyrinth", year: 2006, english_title: "Pan's Labyrinth", tag: "fairy_trauma" }
+  - { title: "The Avengers", year: 2012, english_title: "The Avengers", tag: "spectacle_control" }
+  - { title: "Diamonds Are Forever", year: 1971, english_title: "Diamonds Are Forever", tag: "spy_control" }
+  - { title: "My Neighbor Totoro", year: 1988, english_title: "My Neighbor Totoro", tag: "gentle_folklore" }

@@ -1,0 +1,71 @@
+# PsychoFilm Analyzer — default configuration
+# Override via CLI flags or a custom YAML file.
+
+weights:
+  thematic_keyword_density: 0.25
+  narrative_character_depth: 0.20
+  awards_prestige: 0.15
+  critical_intellectual_discourse: 0.20
+  director_creator_reputation: 0.10
+  discussability_podcast: 0.10
+
+# Hard caps (Psycho_Score maximum)
+caps:
+  pure_spectacle_max: 4.0          # action/comedy/superhero without depth
+  documentary_no_psych_max: 2.0
+  low_rating_max: 3.5              # IMDb/Kinopoisk < low_rating_threshold
+  low_rating_threshold: 6.0
+  exceptional_discourse_bypass: 7.5  # discourse score above this lifts low-rating cap
+
+# Confidence thresholds (fraction of non-null factor scores)
+confidence:
+  high_min_sources: 4
+  medium_min_sources: 2
+
+# Cache
+cache:
+  dir: cache
+  ttl_days: 30
+  enabled: true
+
+# HTTP
+http:
+  delay_sec: 0.35
+  timeout_sec: 20
+  max_retries: 2
+  user_agent: "PsychoFilmAnalyzer/1.0 (+research; educational; contact: local)"
+
+# Languages preference for lookups
+languages:
+  - en
+  - ru
+  - de
+
+# Output
+output:
+  dir: output
+  excel: true
+  json: true
+  markdown_top_n: 25
+  markdown_min_score: 7.0
+
+# Pipeline
+pipeline:
+  batch_size: 50
+  resume: true
+  state_file: output/pipeline_state.json
+  skip_if_score_exists: true
+
+# Data source toggles
+sources:
+  tmdb: true
+  omdb: true
+  kinopoisk: true
+  wikipedia: true
+  letterboxd: true
+  discourse_web: false   # set true only if you accept extra latency / scraping
+
+# Description generation
+description:
+  min_words: 200
+  max_words: 400

@@ -1,0 +1,486 @@
+# Expandable signal dictionaries for PsychoFilm Analyzer
+
+clusters:
+  - id: adolescence_identity
+    name: "Adolescence & Identity Formation"
+    keywords:
+      - adolescence
+      - coming of age
+      - identity
+      - self-discovery
+      - teen
+      - puberty
+      - peer pressure
+      - queer identity
+      - gender identity
+      - bildungsroman
+      - youth
+      - rite of passage
+      - social anxiety
+      - first love
+      - school
+      - подростк
+      - взросление
+      - идентичность
+      - самоопределение
+
+  - id: childhood_trauma
+    name: "Childhood / Transgenerational Trauma"
+    keywords:
+      - childhood trauma
+      - abuse
+      - neglect
+      - generational trauma
+      - intergenerational
+      - ptsd
+      - repressed memory
+      - child abuse
+      - family secret
+      - orphan
+      - attachment trauma
+      - incest
+      - domestic violence
+      - trauma bond
+      - cycle of violence
+      - детск
+      - травм
+      - насили
+      - поколен
+      - жестокост
+
+  - id: madness_psychosis
+    name: "Madness, Psychosis & Borderline States"
+    keywords:
+      - psychosis
+      - schizophrenia
+      - madness
+      - insanity
+      - mental illness
+      - breakdown
+      - delusion
+      - hallucination
+      - paranoia
+      - bipolar
+      - borderline
+      - dissociative
+      - multiple personality
+      - split personality
+      - psychiatric
+      - asylum
+      - unreliable mind
+      - unreliable narrator
+      - gaslighting
+      - mind-bending
+      - psychological thriller
+      - psychological drama
+      - безумие
+      - психоз
+      - шизофрен
+      - паранои
+      - психиатр
+      - пограничн
+      - психолог
+
+  - id: jungian_shadow
+    name: "Jungian Shadow, Persona & Individuation"
+    keywords:
+      - jung
+      - jungian
+      - shadow
+      - persona
+      - anima
+      - animus
+      - individuation
+      - archetype
+      - collective unconscious
+      - double
+      - doppelganger
+      - doppelgänger
+      - mask
+      - alter ego
+      - dark side
+      - integration
+      - symbolic
+      - mythic
+      - surreal
+      - surrealist
+      - dream logic
+      - dreamlike
+      - split identity
+      - dual identity
+      - hollywood dream
+      - юнг
+      - тень
+      - архетип
+      - персона
+      - индивидуац
+      - сюрреал
+      - сновид
+
+  - id: family_attachment
+    name: "Family Systems, Attachment & Parental Complexes"
+    keywords:
+      - family
+      - mother
+      - father
+      - parental
+      - attachment
+      - oedipus
+      - enmeshment
+      - codependency
+      - dysfunctional family
+      - sibling
+      - inheritance
+      - mother complex
+      - father complex
+      - divorce
+      - custody
+      - family therapy
+      - family system
+      - сем
+      - мать
+      - отец
+      - родитель
+      - привязанност
+      - созависимост
+
+  - id: existential_midlife
+    name: "Existential Crisis, Meaning, Death & Midlife"
+    keywords:
+      - existential
+      - meaning of life
+      - death
+      - mortality
+      - midlife crisis
+      - nihilism
+      - absurd
+      - suicide
+      - grief
+      - bereavement
+      - loneliness
+      - isolation
+      - purpose
+      - freedom
+      - responsibility
+      - aging
+      - regret
+      - emptiness
+      - alienation
+      - consumerism
+      - camus
+      - sartre
+      - heidegger
+      - экзистенц
+      - смысл
+      - смерть
+      - одиночеств
+      - кризис
+      - нигилизм
+      - отчужден
+
+  - id: collective_power
+    name: "Collective Unconscious, Power & Historical Psychotypes"
+    keywords:
+      - totalitarian
+      - propaganda
+      - mass psychology
+      - power
+      - ideology
+      - war trauma
+      - historical trauma
+      - collective guilt
+      - fascism
+      - authoritarianism
+      - cult
+      - groupthink
+      - nationalism
+      - revolution
+      - oppression
+      - social control
+      - conformity
+      - surveillance
+      - тоталитар
+      - власть
+      - идеолог
+      - пропаганд
+      - коллективн
+      - историческ травм
+
+narrative_signals:
+  high:
+    - unreliable narrator
+    - moral ambiguity
+    - character study
+    - slow burn
+    - internal conflict
+    - psychological thriller
+    - mind-bending
+    - nonlinear narrative
+    - stream of consciousness
+    - dual timeline
+    - identity crisis
+    - transformation
+    - redemption arc
+    - antihero
+    - ambiguous ending
+    - philosophical
+    - allegorical
+    - surreal
+    - dream logic
+    - metafiction
+    - breaking the fourth wall
+    - subjective camera
+    - confessional
+    - chamber drama
+    - intimate portrait
+    - layered
+    - multi-layered
+    - complex characters
+    - grey morality
+    - ethical dilemma
+    - free will
+    - consciousness
+    - memory
+    - trauma narrative
+    - character-driven
+  medium:
+    - drama
+    - thriller
+    - mystery
+    - neo-noir
+    - arthouse
+    - indie
+    - coming-of-age
+    - biographical
+    - literary adaptation
+    - ensemble
+  low_spectacle:  # signals pure entertainment / low psych depth
+    - superhero
+    - blockbuster
+    - action comedy
+    - buddy cop
+    - heist fun
+    - cgi spectacle
+    - franchise
+    - comic book
+    - slapstick
+    - rom-com
+    - family comedy
+    - popcorn
+
+prestige_awards:
+  major:
+    - academy award
+    - oscar
+    - palme d'or
+    - golden palm
+    - golden lion
+    - golden bear
+    - grand prix
+    - bafta
+    - golden globe
+    - european film award
+    - cesar
+    - goya
+    - nika
+    - golden eagle
+    - emmy
+    - peabody
+  notable:
+    - cannes
+    - venice
+    - berlinale
+    - sundance
+    - critics choice
+    - independent spirit
+    - saturn award
+    - aacta
+    - gotham
+
+# Directors / showrunners associated with psychological depth
+high_psych_creators:
+  directors:
+    - Ingmar Bergman
+    - Andrei Tarkovsky
+    - Stanley Kubrick
+    - David Lynch
+    - Lars von Trier
+    - Michael Haneke
+    - Krzysztof Kieślowski
+    - Krzysztof Kieslowski
+    - Luis Buñuel
+    - Federico Fellini
+    - Michelangelo Antonioni
+    - Akira Kurosawa
+    - Yasujirō Ozu
+    - Yasujiro Ozu
+    - Wong Kar-wai
+    - Park Chan-wook
+    - Bong Joon-ho
+    - Lee Chang-dong
+    - Hirokazu Kore-eda
+    - Hirokazu Koreeda
+    - Charlie Kaufman
+    - Paul Thomas Anderson
+    - Darren Aronofsky
+    - Denis Villeneuve
+    - Christopher Nolan
+    - Yorgos Lanthimos
+    - Ari Aster
+    - Robert Eggers
+    - Jordan Peele
+    - David Fincher
+    - Alejandro González Iñárritu
+    - Alejandro Inarritu
+    - Alfonso Cuarón
+    - Alfonso Cuaron
+    - Guillermo del Toro
+    - Pedro Almodóvar
+    - Pedro Almodovar
+    - Claire Denis
+    - Chantal Akerman
+    - Agnès Varda
+    - Agnes Varda
+    - Terrence Malick
+    - Werner Herzog
+    - Rainer Werner Fassbinder
+    - Wim Wenders
+    - Gaspar Noé
+    - Gaspar Noe
+    - Nicolas Winding Refn
+    - Asghar Farhadi
+    - Nuri Bilge Ceylan
+    - Béla Tarr
+    - Bela Tarr
+    - Roy Andersson
+    - Joachim Trier
+    - Céline Sciamma
+    - Celine Sciamma
+    - Sofia Coppola
+    - Lynne Ramsay
+    - Andrea Arnold
+    - Steve McQueen
+    - Barry Jenkins
+    - Mike Leigh
+    - Ken Loach
+    - Roman Polanski
+    - Sidney Lumet
+    - Francis Ford Coppola
+    - Martin Scorsese
+    - Woody Allen
+    - Coen Brothers
+    - Joel Coen
+    - Ethan Coen
+    - Spike Jonze
+    - Michel Gondry
+    - Richard Linklater
+    - Noah Baumbach
+    - Greta Gerwig
+    - Todd Field
+    - Jonathan Glazer
+    - Brady Corbet
+    - Sean Baker
+    - Ryusuke Hamaguchi
+    - Andrey Zvyagintsev
+    - Andrei Zvyagintsev
+    - Кира Муратова
+    - Kira Muratova
+    - Алексей Герман
+    - Aleksei German
+    - Александр Сокуров
+    - Alexander Sokurov
+    - Кантемир Балагов
+    - Kantemir Balagov
+    - Андрей Кончаловский
+    - Andrey Konchalovsky
+    - Никита Михалков
+    - Nikita Mikhalkov
+    - Алексей Балабанов
+    - Aleksei Balabanov
+    - Кирилл Серебренников
+    - Kirill Serebrennikov
+  showrunners:
+    - David Lynch
+    - Vince Gilligan
+    - David Chase
+    - Matthew Weiner
+    - David Simon
+    - Nic Pizzolatto
+    - Noah Hawley
+    - Jesse Armstrong
+    - Phoebe Waller-Bridge
+    - Michaela Coel
+    - Mike White
+    - Sam Esmail
+    - Damon Lindelof
+    - Alan Ball
+    - Mike Flanagan
+    - Ryan Murphy
+    - Shonda Rhimes
+    - Marti Noxon
+    - Jenji Kohan
+    - Lena Dunham
+    - Donald Glover
+    - Hirokazu Kore-eda
+    - Yorgos Lanthimos
+    - Charlie Brooker
+    - The Duffer Brothers
+    - Craig Mazin
+    - Peter Morgan
+    - Beau Willimon
+    - David Milch
+    - Tom Fontana
+    - Steven Knight
+    - Chris Carter
+    - Joss Whedon
+    - Aaron Sorkin
+    - Taylor Sheridan
+
+# Genre heuristics
+genres:
+  high_psych:
+    - drama
+    - psychological
+    - thriller
+    - mystery
+    - crime
+    - biography
+    - war
+    - history
+    - romance  # can be high if character-driven
+    - драма
+    - триллер
+    - детектив
+    - биография
+    - военный
+    - история
+  spectacle:
+    - action
+    - adventure
+    - comedy
+    - family
+    - animation
+    - fantasy
+    - science fiction
+    - sci-fi
+    - superhero
+    - боевик
+    - приключения
+    - комедия
+    - семейный
+    - мультфильм
+    - фэнтези
+    - фантастика
+  documentary:
+    - documentary
+    - документальный
+  horror_psych:
+    - horror
+    - ужасы
+
+# Query templates for discourse estimation (used when discourse_web enabled)
+discourse_queries:
+  - '"{title}" psychological analysis'
+  - '"{title}" jungian OR trauma OR psychoanalysis'
+  - '"{title}" film analysis OR essay OR meaning'
+  - '"{title}" психологический анализ'
