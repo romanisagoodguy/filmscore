@@ -30,7 +30,7 @@ cache:
 
 # HTTP
 http:
-  delay_sec: 0.35
+  delay_sec: 0.2
   timeout_sec: 20
   max_retries: 2
   user_agent: "PsychoFilmAnalyzer/1.0 (+research; educational; contact: local)"
@@ -55,6 +55,12 @@ pipeline:
   resume: true
   state_file: output/pipeline_state.json
   skip_if_score_exists: true
+  gather_checkpoint: output/gather_checkpoint.jsonl
+  gather_progress: output/gather_progress.json
+  gather_live_txt: output/gather_live.txt
+  gather_live_csv: output/gather_live.csv
+  gather_live_xlsx: output/gather_live.xlsx
+  gather_excel_every: 10   # rewrite rolling Excel every N completed films
 
 # Data source toggles
 sources:
@@ -64,6 +70,11 @@ sources:
   wikipedia: true
   letterboxd: true
   discourse_web: false   # set true only if you accept extra latency / scraping
+
+# Wikipedia bulk settings (narrative bags; polite rate limits)
+wikipedia:
+  # EN only for full-catalog speed; RU plots come from TMDB/Kinopoisk
+  langs: [en]
 
 # Description generation
 description:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -93,19 +94,234 @@ class Pipeline:
             logger.exception("Gather failed for %s", item.title)
             return EnrichmentProfile(input=item, error=str(exc))
 
+    @staticmethod
+    def resume_key(item: InputTitle) -> str:
+        """Stable key for gather checkpoint (prefer import row uniqueness)."""
+        if item.source_file or item.source_sheet or item.source_row is not None:
+            return "|".join(
+                [
+                    str(item.source_file or ""),
+                    str(item.source_sheet or ""),
+                    str(item.source_row or ""),
+                    str(item.import_title or item.title or "").strip().lower(),
+                    str(item.import_year if item.import_year is not None else item.year or ""),
+                ]
+            )
+        return item.cache_key()
+
     def gather(
         self,
         items: list[InputTitle],
         *,
         show_progress: bool = True,
+        resume: bool = True,
+        checkpoint_path: Optional[str | Path] = None,
+        progress_every: int = 25,
+        live_export: bool = True,
     ) -> list[EnrichmentProfile]:
+        """
+        Phase A gather with JSONL checkpoint resume.
+
+        Each finished title is:
+          1) appended to gather_checkpoint.jsonl
+          2) appended to live text + CSV reports
+          3) periodically written into the rolling live Excel workbook
+        """
+        from psychofilm_analyzer.enrichment.export import (
+            append_live_csv,
+            append_live_text,
+            bootstrap_live_exports_from_checkpoint,
+            write_live_excel,
+        )
+
+        pipe_cfg = self.config.get("pipeline") or {}
+        out_dir = Path((self.config.get("output") or {}).get("dir", "output"))
+        ckpt = Path(
+            checkpoint_path
+            or pipe_cfg.get("gather_checkpoint", "output/gather_checkpoint.jsonl")
+        )
+        progress_file = Path(pipe_cfg.get("gather_progress", "output/gather_progress.json"))
+        live_txt = Path(pipe_cfg.get("gather_live_txt", out_dir / "gather_live.txt"))
+        live_csv = Path(pipe_cfg.get("gather_live_csv", out_dir / "gather_live.csv"))
+        live_xlsx = Path(pipe_cfg.get("gather_live_xlsx", out_dir / "gather_live.xlsx"))
+        excel_every = int(pipe_cfg.get("gather_excel_every", 10))
+        ckpt.parent.mkdir(parents=True, exist_ok=True)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        done_keys: set[str] = set()
+        if resume and ckpt.exists():
+            try:
+                with ckpt.open("r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            row = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        key = row.get("_resume_key")
+                        if key:
+                            done_keys.add(str(key))
+                logger.info("Gather resume: %s titles already in checkpoint", len(done_keys))
+            except OSError as exc:
+                logger.warning("Could not read gather checkpoint: %s", exc)
+
+        # Rebuild live text/csv/excel from checkpoint so files match completed work
+        total_done = len(done_keys)
+        if live_export and total_done:
+            try:
+                n = bootstrap_live_exports_from_checkpoint(
+                    ckpt,
+                    text_path=live_txt,
+                    csv_path=live_csv,
+                    excel_path=live_xlsx,
+                    rebuild_excel=True,
+                )
+                logger.info("Live exports rebuilt from checkpoint (%s profiles)", n)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not bootstrap live exports: %s", exc)
+        elif live_export:
+            # Fresh run: start empty text header
+            live_txt.write_text(
+                "PsychoFilm gather live report\n"
+                f"started: {datetime.now(timezone.utc).isoformat()}\n\n",
+                encoding="utf-8",
+            )
+            if live_csv.exists():
+                live_csv.unlink()
+
+        profiles: list[EnrichmentProfile] = []
+        self._gather_checkpoint_path = ckpt  # type: ignore[attr-defined]
+        self._gather_precompleted = len(done_keys)  # type: ignore[attr-defined]
+        self._gather_live_paths = {  # type: ignore[attr-defined]
+            "txt": live_txt,
+            "csv": live_csv,
+            "xlsx": live_xlsx,
+        }
+
         iterator = items
         if show_progress:
             iterator = tqdm(items, desc="Gather", unit="title")
-        profiles: list[EnrichmentProfile] = []
+
+        processed_new = 0
         for item in iterator:
-            profiles.append(self.gather_item(item))
+            key = self.resume_key(item)
+            if key in done_keys:
+                continue
+            profile = self.gather_item(item)
+            profiles.append(profile)
+            done_keys.add(key)
+            processed_new += 1
+            total_done = len(done_keys)
+            payload = profile.to_json_dict()
+            try:
+                payload["_resume_key"] = key
+                with ckpt.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            except OSError as exc:
+                logger.warning("Checkpoint append failed: %s", exc)
+
+            if live_export:
+                try:
+                    # strip resume key for export dict
+                    export_d = {k: v for k, v in payload.items() if k != "_resume_key"}
+                    append_live_text(export_d, live_txt, index=total_done)
+                    append_live_csv(export_d, live_csv, index=total_done)
+                    # Rolling Excel: every N films + always first film of session
+                    if processed_new == 1 or (excel_every and total_done % excel_every == 0):
+                        all_dicts = self.load_gather_checkpoint(ckpt)
+                        write_live_excel(all_dicts, live_xlsx, include_evidence=False)
+                        logger.info(
+                            "Live Excel updated (%s films) → %s", total_done, live_xlsx
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Live export failed for %s: %s", item.title, exc)
+
+            if progress_every and processed_new % progress_every == 0:
+                self._write_gather_progress(
+                    progress_file,
+                    total=len(items),
+                    done=len(done_keys),
+                    new=processed_new,
+                    last_title=item.display_title(),
+                )
+
+        # Final live Excel flush
+        if live_export and processed_new:
+            try:
+                all_dicts = self.load_gather_checkpoint(ckpt)
+                write_live_excel(all_dicts, live_xlsx, include_evidence=False)
+                logger.info("Final live Excel (%s films) → %s", len(all_dicts), live_xlsx)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Final live Excel failed: %s", exc)
+
+        self._write_gather_progress(
+            progress_file,
+            total=len(items),
+            done=len(done_keys),
+            new=processed_new,
+            last_title=profiles[-1].input.display_title() if profiles else None,
+            finished=True,
+        )
+        logger.info(
+            "Gather finished: %s new this run, %s total in checkpoint",
+            processed_new,
+            len(done_keys),
+        )
+        if live_export:
+            logger.info("Live files: txt=%s csv=%s xlsx=%s", live_txt, live_csv, live_xlsx)
         return profiles
+
+    def load_gather_checkpoint(
+        self, checkpoint_path: Optional[str | Path] = None
+    ) -> list[dict[str, Any]]:
+        """Load full profile dicts from gather JSONL checkpoint (for export / score-v3)."""
+        pipe_cfg = self.config.get("pipeline") or {}
+        ckpt = Path(
+            checkpoint_path
+            or getattr(self, "_gather_checkpoint_path", None)
+            or pipe_cfg.get("gather_checkpoint", "output/gather_checkpoint.jsonl")
+        )
+        if not ckpt.exists():
+            return []
+        out: list[dict[str, Any]] = []
+        with ckpt.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                row.pop("_resume_key", None)
+                out.append(row)
+        return out
+
+    @staticmethod
+    def _write_gather_progress(
+        path: Path,
+        *,
+        total: int,
+        done: int,
+        new: int,
+        last_title: Optional[str] = None,
+        finished: bool = False,
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "total_input": total,
+            "done_checkpoint": done,
+            "new_this_run": new,
+            "remaining": max(0, total - done),
+            "pct": round(100.0 * done / total, 2) if total else 0.0,
+            "last_title": last_title,
+            "finished": finished,
+        }
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
 
     def run(
         self,

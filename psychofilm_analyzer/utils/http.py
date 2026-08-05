@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 _SENSITIVE_PARAM = re.compile(r"^(api_key|apikey|api-key|token|password)$", re.I)
 
 
+class RateLimitedError(Exception):
+    """HTTP 429 — not retried by tenacity (callers should back off)."""
+
+
 def _redact_params(params: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     if not params:
         return params
@@ -113,15 +117,19 @@ class HttpClient:
             )
             self._last_request = time.monotonic()
             if resp.status_code == 429:
-                retry_after = float(resp.headers.get("Retry-After", "5"))
-                # Cap wait so one hostile endpoint cannot stall the whole batch
-                retry_after = min(retry_after, 15.0)
-                logger.warning("Rate limited on %s, sleeping %ss", url, retry_after)
+                retry_after = float(resp.headers.get("Retry-After", "2") or 2)
+                retry_after = min(max(retry_after, 1.0), 5.0)
+                logger.warning("Rate limited on %s (no tenacity retry, wait %.0fs)", url, retry_after)
                 time.sleep(retry_after)
-                raise requests.RequestException("429 rate limited")
+                # Not a RequestException — tenacity will not re-hammer the endpoint
+                raise RateLimitedError(f"429 rate limited: {url}")
             if resp.status_code >= 500:
                 raise requests.RequestException(f"Server error {resp.status_code}")
             if resp.status_code == 404:
+                return None if as_json else ""
+            # Other 4xx are permanent — do not retry (e.g. Kinopoisk keywords 400)
+            if 400 <= resp.status_code < 500:
+                logger.debug("HTTP %s client error %s on %s", method, resp.status_code, url)
                 return None if as_json else ""
             resp.raise_for_status()
             if as_json:
@@ -133,6 +141,8 @@ class HttpClient:
 
         try:
             return _do()
+        except RateLimitedError:
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("HTTP failed %s %s: %s", method, url, exc)
             raise

@@ -44,10 +44,15 @@ class TmdbSource(BaseSource):
 
         tmdb_id = result.get("id")
         media = "tv" if is_tv else "movie"
-        details = self._details(tmdb_id, media)
+        # One EN details call with credits+keywords+external_ids (saves 2 round-trips)
+        details = self._details(
+            tmdb_id,
+            media,
+            append="external_ids,credits,keywords",
+        )
         details_ru = self._details(tmdb_id, media, language="ru-RU")
-        keywords = self._keywords(tmdb_id, media)
-        credits = self._credits(tmdb_id, media)
+        keywords = self._keywords_from_details(details, media)
+        credits = (details or {}).get("credits") or {}
 
         genres_en = [g.get("name", "") for g in (details or {}).get("genres", []) if g.get("name")]
         genres_ru = [g.get("name", "") for g in (details_ru or {}).get("genres", []) if g.get("name")]
@@ -239,10 +244,29 @@ class TmdbSource(BaseSource):
         scored.sort(key=lambda x: (x[0], x[1]))
         return scored[0][2]
 
-    def _details(self, tmdb_id: int, media: str, language: str = "en-US") -> Optional[dict]:
-        params = self._params({"append_to_response": "external_ids"})
+    def _details(
+        self,
+        tmdb_id: int,
+        media: str,
+        language: str = "en-US",
+        append: str = "external_ids",
+    ) -> Optional[dict]:
+        params = self._params({"append_to_response": append})
         params["language"] = language
         return self.http.get(f"{TMDB_API}/{media}/{tmdb_id}", params=params)
+
+    @staticmethod
+    def _keywords_from_details(details: Optional[dict], media: str) -> list[str]:
+        if not details:
+            return []
+        block = details.get("keywords") or {}
+        if media == "tv":
+            kws = block.get("results") or block.get("keywords") or []
+        else:
+            kws = block.get("keywords") or block.get("results") or []
+        if isinstance(kws, list):
+            return [k.get("name") for k in kws if isinstance(k, dict) and k.get("name")]
+        return []
 
     def _keywords(self, tmdb_id: int, media: str) -> list[str]:
         data = self.http.get(f"{TMDB_API}/{media}/{tmdb_id}/keywords", params=self._params())

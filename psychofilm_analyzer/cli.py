@@ -100,6 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
     # gather (Phase A)
     g = sub.add_parser("gather", help="Phase A: multi-source enrichment only (no psych scores)")
     add_common(g)
+    g.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Ignore gather_checkpoint.jsonl and re-fetch all titles",
+    )
 
     # score (legacy v1 engine)
     s = sub.add_parser("score", help="Enrich + score (legacy v1 single Psycho_Score engine)")
@@ -113,7 +118,23 @@ def build_parser() -> argparse.ArgumentParser:
     v3.add_argument(
         "--from-profiles",
         default=None,
-        help="Path to profile JSON from gather (full profiles file or profile_YYYY.json)",
+        help="Path to profile JSON/JSONL from gather (profile_*.json or gather_checkpoint.jsonl)",
+    )
+    v3.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Ignore score_checkpoint.jsonl and re-score all profiles",
+    )
+    v3.add_argument(
+        "--no-live-export",
+        action="store_true",
+        help="Disable per-film text/csv/excel live export (final export only)",
+    )
+    v3.add_argument(
+        "--excel-every",
+        type=int,
+        default=25,
+        help="Refresh score_live.xlsx every N scored films (default 25)",
     )
 
     # default args when no subcommand (backward compatible = score)
@@ -139,30 +160,107 @@ def cmd_gather(args: argparse.Namespace) -> int:
         print("Provide --input, --title, and/or --eval-set.", file=sys.stderr)
         return 2
 
-    print(f"PsychoFilm Analyzer v{__version__} — GATHER ONLY")
-    print(f"Titles: {len(items)} (no psych scores / clusters)")
-    keys = config.get("api_keys") or {}
-    print(
-        "API keys: "
-        f"TMDB={'yes' if keys.get('tmdb') else 'no'}, "
-        f"OMDb={'yes' if keys.get('omdb') else 'no'}, "
-        f"Kinopoisk={'yes' if keys.get('kinopoisk') else 'no'}"
+    from psychofilm_analyzer.utils.run_plan import (
+        build_gather_plan,
+        print_run_plan,
+        write_run_plan,
     )
 
-    profiles = pipe.gather(items)
     out_dir = (config.get("output") or {}).get("dir", "output")
-    written = write_profiles(profiles, output_dir=out_dir, prefix="profile")
+    resume = not getattr(args, "no_resume", False)
+    src = config.get("sources") or {}
+    keys = config.get("api_keys") or {}
+    source_file = args.input if getattr(args, "input", None) else (
+        "config/eval_set_20.yaml" if getattr(args, "eval_set", False) else None
+    )
+    sheet = items[0].source_sheet if items else None
 
-    print("\nCoverage summary:")
-    for p in profiles:
-        cov = p.coverage
+    plan = build_gather_plan(
+        source_file=source_file,
+        source_sheet=sheet,
+        titles_count=len(items),
+        output_dir=out_dir,
+        sources_enabled={
+            "tmdb": bool(src.get("tmdb", True) and keys.get("tmdb")),
+            "omdb": bool(src.get("omdb", True) and keys.get("omdb")),
+            "kinopoisk": bool(src.get("kinopoisk", True) and keys.get("kinopoisk")),
+            "wikipedia": bool(src.get("wikipedia", True)),
+            "letterboxd": bool(src.get("letterboxd", True)),
+        },
+        resume=resume,
+    )
+    print(f"PsychoFilm Analyzer v{__version__} — GATHER ONLY")
+    print_run_plan(plan)
+    write_run_plan(plan, Path(out_dir) / "pipeline_run_plan.json")
+    print(f"  Run plan saved → {out_dir}/pipeline_run_plan.json")
+
+    session_profiles = pipe.gather(items, resume=resume)
+
+    # Prefer full checkpoint (includes prior resume rows) for export
+    from psychofilm_analyzer.enrichment.export import write_profile_dicts
+
+    ckpt_dicts = pipe.load_gather_checkpoint()
+    if not ckpt_dicts and session_profiles:
+        all_dicts = [p.to_json_dict() for p in session_profiles]
+    else:
+        # Preserve catalog order from input items
+        by_key: dict[str, dict] = {}
+        # Re-read with keys from file
+        pipe_cfg = config.get("pipeline") or {}
+        ckpt_path = Path(pipe_cfg.get("gather_checkpoint", "output/gather_checkpoint.jsonl"))
+        if ckpt_path.exists():
+            import json as _json
+
+            with ckpt_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = _json.loads(line)
+                    except _json.JSONDecodeError:
+                        continue
+                    k = row.pop("_resume_key", None)
+                    if k:
+                        by_key[str(k)] = row
+        all_dicts = []
+        for it in items:
+            k = pipe.resume_key(it)
+            if k in by_key:
+                all_dicts.append(by_key[k])
+        # Append any orphan checkpoint rows not in current input
+        seen = {pipe.resume_key(it) for it in items}
+        for k, row in by_key.items():
+            if k not in seen:
+                all_dicts.append(row)
+
+    # Excel for full catalog is heavy; still write it (capped evidence sheet)
+    write_excel = len(all_dicts) <= 20000
+    written = write_profile_dicts(
+        all_dicts, output_dir=out_dir, prefix="profile", write_excel=write_excel
+    )
+
+    # Coverage summary: all rows if small, else aggregate stats
+    print(f"\nGathered profiles: {len(all_dicts)}")
+    if len(all_dicts) <= 40:
+        for p in session_profiles:
+            cov = p.coverage
+            print(
+                f"  {p.title_en or p.input.display_title():40s} "
+                f"src={cov.get('sources_found')} "
+                f"plot_en={cov.get('has_plot_en')} plot_ru={cov.get('has_plot_ru')} "
+                f"kw={cov.get('keywords_n')} bags={cov.get('bags_n')} "
+                f"type={p.content_type} spectacle={p.type_flags.get('is_spectacle')}"
+            )
+    else:
+        found = sum(1 for d in all_dicts if (d.get("coverage") or {}).get("sources_found"))
+        plot_en = sum(1 for d in all_dicts if (d.get("coverage") or {}).get("has_plot_en"))
+        plot_ru = sum(1 for d in all_dicts if (d.get("coverage") or {}).get("has_plot_ru"))
+        errs = sum(1 for d in all_dicts if d.get("error"))
         print(
-            f"  {p.title_en or p.input.display_title():40s} "
-            f"src={cov.get('sources_found')} "
-            f"plot_en={cov.get('has_plot_en')} plot_ru={cov.get('has_plot_ru')} "
-            f"kw={cov.get('keywords_n')} bags={cov.get('bags_n')} "
-            f"type={p.content_type} spectacle={p.type_flags.get('is_spectacle')}"
+            f"  with sources: {found} | plot_en: {plot_en} | plot_ru: {plot_ru} | errors: {errs}"
         )
+        print(f"  session new EnrichmentProfiles: {len(session_profiles)}")
     print("\nOutputs:")
     for k, path in written.items():
         print(f"  {k}: {path}")
@@ -228,15 +326,24 @@ def cmd_score_v3(args: argparse.Namespace) -> int:
     profiles: list[dict] = []
     if args.from_profiles:
         path = Path(args.from_profiles)
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and "profiles" in data:
-            profiles = data["profiles"]
-        elif isinstance(data, list):
-            # flat list cannot rebuild full bags well — prefer full JSON
-            profiles = data
+        # Support JSONL checkpoint or full JSON
+        if path.suffix.lower() == ".jsonl":
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                row.pop("_resume_key", None)
+                profiles.append(row)
         else:
-            print("Unrecognized profile JSON format.", file=sys.stderr)
-            return 2
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "profiles" in data:
+                profiles = data["profiles"]
+            elif isinstance(data, list):
+                profiles = data
+            else:
+                print("Unrecognized profile JSON format.", file=sys.stderr)
+                return 2
     else:
         # live gather then score
         pipe = Pipeline(config, load_dictionaries())
@@ -251,10 +358,60 @@ def cmd_score_v3(args: argparse.Namespace) -> int:
     if args.limit:
         profiles = profiles[: args.limit]
 
+    live = not getattr(args, "no_live_export", False)
+    resume = not getattr(args, "no_resume", False)
+    excel_every = int(getattr(args, "excel_every", None) or 25)
+
+    from psychofilm_analyzer.utils.run_plan import (
+        build_score_v3_plan,
+        print_run_plan,
+        write_run_plan,
+    )
+
+    score_input = args.from_profiles or "(live gather from --input / --eval-set / --title)"
+    plan = build_score_v3_plan(
+        score_input=score_input,
+        profiles_count=len(profiles),
+        output_dir=out_dir,
+        resume=resume,
+        excel_every=excel_every,
+        live_export=live,
+    )
+    # Document where the film list originally came from (if present on profiles)
+    sample = profiles[0] if profiles else {}
+    imported = sample.get("imported") or {}
+    plan["film_list_provenance"] = {
+        "imported_file": imported.get("file") or sample.get("imported_file"),
+        "imported_sheet": imported.get("sheet") or sample.get("imported_sheet"),
+        "note": "Original Excel list is provenance only; scoring reads gather profiles.",
+    }
+
     print(f"PsychoFilm Analyzer v{__version__} — SCORE v3")
-    print(f"Profiles: {len(profiles)}")
-    results = score_profiles(profiles, dicts)
+    print_run_plan(plan)
+    if plan.get("film_list_provenance", {}).get("imported_file"):
+        print("  FILM LIST PROVENANCE (from gather profiles, not re-read for scoring)")
+        print(f"    original list: {plan['film_list_provenance'].get('imported_file')}")
+        print(f"    sheet:         {plan['film_list_provenance'].get('imported_sheet')}")
+        print("")
+    write_run_plan(plan, Path(out_dir) / "pipeline_run_plan.json")
+    print(f"  Run plan saved → {out_dir}/pipeline_run_plan.json")
+
+    results = score_profiles(
+        profiles,
+        dicts,
+        live_export=live,
+        output_dir=out_dir,
+        resume=resume,
+        excel_every=excel_every,
+        show_progress=True,
+    )
+    # Final stamped export (ranked workbook + JSON + markdown top)
     written = write_v3_results(results, output_dir=out_dir)
+    if live:
+        written["live_txt"] = Path(out_dir) / "score_live.txt"
+        written["live_csv"] = Path(out_dir) / "score_live.csv"
+        written["live_xlsx"] = Path(out_dir) / "score_live.xlsx"
+        written["score_checkpoint"] = Path(out_dir) / "score_checkpoint.jsonl"
 
     ranked = sorted(
         results,

@@ -39,7 +39,10 @@ class BaseSource(ABC):
         except Exception as exc:  # noqa: BLE001
             logger.warning("[%s] fetch failed for %s: %s", self.name, item.title, exc)
             payload = SourcePayload(source=self.name, found=False, error=str(exc))
-        self.cache.set(self.name, key, payload.to_dict())
+        # Do not cache transient rate-limit / cooldown misses (retry later)
+        err = (payload.error or "").lower()
+        if payload.found or ("rate limit" not in err and "cooldown" not in err):
+            self.cache.set(self.name, key, payload.to_dict())
         return payload
 
     @abstractmethod

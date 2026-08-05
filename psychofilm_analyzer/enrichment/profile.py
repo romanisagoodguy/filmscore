@@ -303,6 +303,47 @@ def _add_bag(
     )
 
 
+def _looks_cyrillic(text: str) -> bool:
+    if not text:
+        return False
+    cyr = len(re.findall(r"[А-Яа-яЁё]", text))
+    lat = len(re.findall(r"[A-Za-z]", text))
+    return cyr > lat
+
+
+def _add_awards_bags(
+    bags: list[EvidenceBag],
+    text: Optional[str],
+    source: str,
+    weight: float = 0.5,
+) -> None:
+    """
+    Always tag awards by script: awards_en vs awards_ru.
+    Mixed strings (e.g. 'Oscar; Ника') are split so RU awards are never lost.
+    """
+    if not text or not str(text).strip():
+        return
+    raw = str(text).strip()
+    parts = [p.strip() for p in re.split(r"[;|/\n]+", raw) if p and p.strip()]
+    if not parts:
+        parts = [raw]
+    en_parts: list[str] = []
+    ru_parts: list[str] = []
+    for p in parts:
+        if _looks_cyrillic(p):
+            ru_parts.append(p)
+        else:
+            en_parts.append(p)
+    # If nothing classified as RU but whole blob is Cyrillic-dominant
+    if not ru_parts and _looks_cyrillic(raw):
+        ru_parts = [raw]
+        en_parts = []
+    if en_parts:
+        _add_bag(bags, "awards_en", "; ".join(en_parts), source, "en", weight)
+    if ru_parts:
+        _add_bag(bags, "awards_ru", "; ".join(ru_parts), source, "ru", weight)
+
+
 def _detect_content_type(result: EnrichedResult, sources: dict[str, SourcePayload]) -> str:
     genres = " ".join(g.lower() for g in (result.genres or []))
     if result.media_type in {MediaType.SERIES.value, MediaType.SEASON.value, "series", "season"}:
@@ -390,7 +431,7 @@ def build_enrichment_profile(
         _add_bag(bags, "plot_en", wiki.overview_en or (wiki.overview if wiki.language == "en" else None), "wikipedia", "en", 0.9)
         _add_bag(bags, "plot_ru", wiki.overview_ru, "wikipedia", "ru", 0.9)
         if wiki.awards_text:
-            _add_bag(bags, "awards_en", wiki.awards_text, "wikipedia", "en", 0.5)
+            _add_awards_bags(bags, wiki.awards_text, "wikipedia", 0.5)
 
     # --- keywords / genres ---
     if tmdb and tmdb.found and tmdb.keywords:
@@ -410,7 +451,10 @@ def build_enrichment_profile(
         _add_bag(bags, "genres_ru", "; ".join(shell.genres_ru), "merged", "ru", 0.8)
 
     if omdb and omdb.found and omdb.awards_text:
-        _add_bag(bags, "awards_en", omdb.awards_text, "omdb", "en", 0.5)
+        _add_awards_bags(bags, omdb.awards_text, "omdb", 0.5)
+    # Merged awards_text from all sources — split EN/RU so Cyrillic awards are never dropped
+    if shell.awards_text:
+        _add_awards_bags(bags, shell.awards_text, "merged", 0.55)
 
     # credits context (names only — weak bag)
     dirs = shell.directors_en or shell.directors or []

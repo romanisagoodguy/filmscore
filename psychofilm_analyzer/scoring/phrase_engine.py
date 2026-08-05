@@ -101,9 +101,16 @@ def match_phrases(
     t2_t3_present = False
 
     for phrase, tier in phrase_list:
-        if len(phrase) <= 3:
+        # Allow 3-char stems (important for Russian roots: сем, миф, бог, …)
+        # Skip only very short noise (1–2 chars).
+        if len(phrase) < 3:
             continue
-        pat = re.escape(phrase)
+        # Word-boundary for short Latin tokens; substring for Cyrillic stems
+        has_cyr = bool(re.search(r"[а-яё]", phrase, flags=re.I))
+        if has_cyr or len(phrase) <= 4:
+            pat = re.escape(phrase)
+        else:
+            pat = rf"(?<!\w){re.escape(phrase)}(?!\w)"
         for bag in bag_list:
             text = (bag.get("text") or "").lower()
             if not text:

@@ -48,14 +48,78 @@ clusters:
 scores:
   Psychological_Depth:
     phrases:
-      t3: ["psychological drama", "character study", "inner conflict", "moral ambiguity", "unreliable narrator", "psychological complexity"]
-      t2: ["psychological", "subtext", "trauma", "identity", "consciousness", "психолог", "внутренн"]
-      t1: ["drama", "драма"]
+      t3:
+        - "psychological drama"
+        - "character study"
+        - "inner conflict"
+        - "moral ambiguity"
+        - "unreliable narrator"
+        - "psychological complexity"
+        - "психологическая драма"
+        - "психологическ"
+        - "внутренний конфликт"
+        - "нравственн"
+      t2:
+        - "psychological"
+        - "subtext"
+        - "trauma"
+        - "identity"
+        - "consciousness"
+        - "психолог"
+        - "внутренн"
+        - "подтекст"
+        - "травм"
+        - "идентичност"
+        - "сознание"
+        - "душевы"
+      t1: ["drama", "драма", "характер"]
   Trauma_Clinical_Relevance:
     phrases:
-      t3: ["childhood trauma", "post-traumatic", "ptsd", "war trauma", "sexual abuse", "grief and loss"]
-      t2: ["trauma", "abuse", "survivor", "mourning", "bereavement", "травм", "горе", "насили"]
-      t1: ["loss", "pain"]
+      t3:
+        - "childhood trauma"
+        - "post-traumatic"
+        - "ptsd"
+        - "war trauma"
+        - "sexual abuse"
+        - "grief and loss"
+        - "детская травма"
+        - "посттравмат"
+        - "военная травма"
+        - "сексуальн"
+      t2:
+        # EN lexicon pack v1
+        - "trauma"
+        - "abuse"
+        - "survivor"
+        - "mourning"
+        - "bereavement"
+        - "guilt"
+        - "shame"
+        - "grief"
+        - "violence"
+        - "assault"
+        - "neglect"
+        - "wound"
+        - "scars"
+        - "victim"
+        - "suffering"
+        - "nightmares"
+        # RU lexicon pack v1
+        - "травм"
+        - "горе"
+        - "насили"
+        - "вина"
+        - "стыд"
+        - "страда"
+        - "жертв"
+        - "жестокост"
+        - "издеват"
+        - "потер"
+        - "скорб"
+        - "увечь"
+        - "ранен"
+        - "кошмар"
+      t1: ["loss", "pain", "боль", "страх"]
   Identity_Transformation:
     phrases:
       t3: ["identity crisis", "becomes someone", "self-discovery", "coming of age", "reinvention"]
@@ -68,9 +132,49 @@ scores:
       t1: ["crazy", "mad"]
   Family_Systems_Complexity:
     phrases:
-      t3: ["family dynamics", "dysfunctional family", "parent-child", "family secret"]
-      t2: ["family", "mother", "father", "sibling", "сем", "родитель"]
-      t1: ["home"]
+      t3:
+        - "family dynamics"
+        - "dysfunctional family"
+        - "parent-child"
+        - "family secret"
+        - "семейная тайна"
+        - "дисфункциональн"
+        - "семейные отношени"
+      t2:
+        # EN
+        - "family"
+        - "mother"
+        - "father"
+        - "sibling"
+        - "daughter"
+        - "son"
+        - "marriage"
+        - "divorce"
+        - "parents"
+        - "relationship"
+        - "wife"
+        - "husband"
+        - "brother"
+        - "sister"
+        - "childhood"
+        - "household"
+        # RU
+        - "сем"
+        - "родитель"
+        - "мать"
+        - "отец"
+        - "дочь"
+        - "сын"
+        - "брак"
+        - "развод"
+        - "жена"
+        - "муж"
+        - "брат"
+        - "сестр"
+        - "отношени"
+        - "детств"
+        - "семей"
+      t1: ["home", "дом", "родител"]
   Existential_Weight:
     phrases:
       t3: ["meaning of life", "existential crisis", "confrontation with death", "search for meaning"]
@@ -83,14 +187,157 @@ scores:
       t1: ["history", "soldier"]
   Narrative_Craft:
     phrases:
-      t3: ["nonlinear narrative", "unreliable narrator", "multiple timelines", "formal experiment"]
-      t2: ["flashback", "montage", "structure", "screenplay", "cinematic", "slow burn"]
-      t1: ["directed", "filmmaking"]
+      t3:
+        - "nonlinear narrative"
+        - "unreliable narrator"
+        - "multiple timelines"
+        - "formal experiment"
+        - "нелинейный нарратив"
+        - "ненадёжный рассказчик"
+        - "ненадежный рассказчик"
+        - "параллельные линии"
+      t2:
+        # EN
+        - "flashback"
+        - "montage"
+        - "structure"
+        - "screenplay"
+        - "cinematic"
+        - "slow burn"
+        - "narrative"
+        - "storytelling"
+        - "perspective"
+        - "voice-over"
+        - "timeline"
+        - "framing"
+        - "twist"
+        - "mystery"
+        - "plot"
+        # RU
+        - "флэшбэк"
+        - "монтаж"
+        - "структур"
+        - "кинематограф"
+        - "режиссёрск"
+        - "режиссерск"
+        - "повествован"
+        - "нарратив"
+        - "сюжет"
+        - "композиц"
+        - "перспектив"
+        - "завязк"
+        - "развязк"
+        - "интриг"
+        - "загадк"
+      t1: ["directed", "filmmaking", "постановк", "история"]
+  # Openness to interpretation / symbolic density (separate from podcast discussability)
+  Symbolism_Ambiguity:
+    phrases:
+      t3:
+        - "open to interpretation"
+        - "ambiguous ending"
+        - "moral ambiguity"
+        - "symbolic imagery"
+        - "allegorical"
+        - "dream logic"
+        - "многозначн"
+        - "открытый финал"
+        - "символическ"
+        - "аллегори"
+        - "двойной смысл"
+      t2:
+        # EN
+        - "symbol"
+        - "metaphor"
+        - "allegory"
+        - "ambiguity"
+        - "ambiguous"
+        - "surreal"
+        - "dream imagery"
+        - "subtext"
+        - "secret"
+        - "mystery"
+        - "hidden"
+        - "illusion"
+        - "double life"
+        - "uncanny"
+        - "nightmare"
+        - "fantasy"
+        - "vision"
+        # RU
+        - "символ"
+        - "метафор"
+        - "аллегор"
+        - "двусмысл"
+        - "неоднознач"
+        - "сюрреал"
+        - "подтекст"
+        - "иносказан"
+        - "тайн"
+        - "загадк"
+        - "скрыт"
+        - "иллюз"
+        - "двойн"
+        - "кошмар"
+        - "сновид"
+        - "видени"
+        - "образ"
+      t1: ["dream", "mask", "mirror", "сон", "маск", "зеркал", "тайна"]
   Discussability_Podcast_Potential:
     phrases:
-      t3: ["open to interpretation", "ambiguous ending", "moral ambiguity", "polarizing"]
-      t2: ["controversial", "debated", "ambiguity", "cult film", "thought-provoking"]
-      t1: ["complex", "layered"]
+      t3:
+        - "open to interpretation"
+        - "ambiguous ending"
+        - "moral ambiguity"
+        - "polarizing"
+        - "thought-provoking"
+        - "provokes debate"
+        - "повод для дискусс"
+        - "открытый финал"
+        - "нравственн"
+        - "моральн"
+        - "общественный резонанс"
+      t2:
+        # EN
+        - "controversial"
+        - "debated"
+        - "ambiguity"
+        - "cult film"
+        - "thought-provoking"
+        - "philosophical"
+        - "provocative"
+        - "divisive"
+        - "relationship"
+        - "guilt"
+        - "desire"
+        - "revenge"
+        - "justice"
+        - "ethics"
+        - "moral"
+        - "dilemma"
+        - "power"
+        - "fear"
+        # RU
+        - "обсужда"
+        - "дискусс"
+        - "спорн"
+        - "культов"
+        - "философск"
+        - "провокац"
+        - "полемич"
+        - "резонанс"
+        - "интерпретац"
+        - "отношени"
+        - "вина"
+        - "желани"
+        - "месть"
+        - "справедливост"
+        - "нравствен"
+        - "дилемм"
+        - "власть"
+        - "страх"
+        - "любов"
+      t1: ["complex", "layered", "сложн", "многослой", "вопрос"]
   Spiritual_Religious_Mystical_Depth:
     phrases:
       t3: ["spiritual journey", "religious faith", "mystical experience", "divine", "sacred ritual"]
@@ -118,12 +365,124 @@ scores:
       t1: ["theory", "experiment"]
   machine_nature:
     phrases:
-      t2: ["machine", "biology", "genetic", "chemical", "deterministic", "animal instinct", "brain chemistry"]
-      t1: ["body", "flesh", "instinct"]
+      t2: ["machine", "biology", "genetic", "chemical", "deterministic", "animal instinct", "brain chemistry", "биологи", "генетик", "инстинкт"]
+      t1: ["body", "flesh", "instinct", "тело", "плоть"]
   spiritual_nature:
     phrases:
-      t2: ["soul", "spirit", "transcendence", "divine spark", "consciousness beyond", "душа", "дух"]
-      t1: ["sacred", "holy"]
+      t2: ["soul", "spirit", "transcendence", "divine spark", "consciousness beyond", "душа", "дух", "трансценд"]
+      t1: ["sacred", "holy", "свят", "священ"]
+  # Pace / engagement language for modern-viewer deliverability (hybrid score in engine)
+  modern_deliverability_pace:
+    phrases:
+      t3:
+        - "edge of your seat"
+        - "non-stop"
+        - "page-turner"
+        - "gripping thriller"
+        - "keeps you guessing"
+        - "захватывающий"
+        - "держит в напряжении"
+        - "не отпускает"
+      t2:
+        - "suspense"
+        - "thriller"
+        - "gripping"
+        - "fast-paced"
+        - "fast paced"
+        - "twists"
+        - "twist"
+        - "cliffhanger"
+        - "humor"
+        - "witty"
+        - "entertaining"
+        - "exciting"
+        - "intense"
+        - "dynamic"
+        - "action-packed"
+        - "tension"
+        - "intrigue"
+        - "compelling"
+        - "adrenaline"
+        - "напряж"
+        - "триллер"
+        - "динамич"
+        - "интриг"
+        - "юмор"
+        - "острым"
+        - "острый сюжет"
+        - "поворот"
+        - "неожидан"
+        - "захватыв"
+        - "увлекательн"
+        - "зрелищн"
+      t1: ["suspenseful", "thrilling", "fun", "pace", "темп", "драйв"]
+  modern_deliverability_drag:
+    phrases:
+      t3:
+        - "slow cinema"
+        - "extremely slow"
+        - "long static"
+        - "tediously long"
+        - "очень медленн"
+        - "затянутый"
+      t2:
+        - "slow-paced"
+        - "slow paced"
+        - "uneventful"
+        - "tedious"
+        - "monotonous"
+        - "meditative pace"
+        - "static shots"
+        - "minimal plot"
+        - "plotless"
+        - "boring"
+        - "drag"
+        - "interminable"
+        - "медленн"
+        - "затянут"
+        - "монотон"
+        - "скучн"
+        - "тягуч"
+        - "бессюжет"
+        - "созерцательн"
+      t1: ["static", "sparse", "austere", "вял"]
+
+  # Awards / festival prestige (phrase + structured awards_text scoring in engine)
+  Awards_Prestige:
+    phrases:
+      t3:
+        - "academy award"
+        - "oscar win"
+        - "palme d'or"
+        - "golden lion"
+        - "golden bear"
+        - "премия оскар"
+        - "золотая пальмовая ветвь"
+        - "золотой лев"
+        - "золотой медведь"
+      t2:
+        - "oscar"
+        - "academy awards"
+        - "bafta"
+        - "golden globe"
+        - "cannes"
+        - "venice film festival"
+        - "berlinale"
+        - "cesar"
+        - "emmy"
+        - "nominated for"
+        - "оскар"
+        - "бафта"
+        - "золотой глобус"
+        - "канн"
+        - "венеци"
+        - "берлинск"
+        - "сезар"
+        - "ника"
+        - "номинац"
+        - "премия"
+        - "лауреат"
+      t1: ["award", "festival", "won", "преми", "фестивал", "наград"]
 
 field_maps:
   archetypes:

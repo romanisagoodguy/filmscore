@@ -1,20 +1,26 @@
 """Wikipedia enrichment (English + Russian, optional German) via MediaWiki API.
 
 Designed to be polite: few candidates, early exit on strong match, cache-friendly.
+Bulk mode: circuit-breaker on 429 so one throttle does not stall the catalog.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Optional
 from urllib.parse import quote
 
 from psychofilm_analyzer.data_sources.base import BaseSource
 from psychofilm_analyzer.models import InputTitle, MediaType, SourcePayload
+from psychofilm_analyzer.utils.http import RateLimitedError
 from psychofilm_analyzer.utils.text import safe_int
 
 logger = logging.getLogger(__name__)
+
+# After a 429, pause further Wikipedia calls for this many seconds
+WIKI_COOLDOWN_SEC = 45.0
 
 FILM_MARKERS = (
     "film",
@@ -61,18 +67,57 @@ NON_FILM_MARKERS = (
 class WikipediaSource(BaseSource):
     name = "wikipedia"
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cooldown_until = 0.0
+        self._rate_limited = False
+
+    def _on_rate_limit(self) -> None:
+        self._rate_limited = True
+        self._cooldown_until = time.monotonic() + WIKI_COOLDOWN_SEC
+        logger.warning("Wikipedia cooldown %.0fs after rate limit", WIKI_COOLDOWN_SEC)
+
+    def _wiki_available(self) -> bool:
+        if time.monotonic() < self._cooldown_until:
+            return False
+        self._rate_limited = False
+        return True
+
     def _fetch(self, item: InputTitle) -> SourcePayload:
-        # Prefer English first; Russian only if English succeeded or is missing
+        if not self._wiki_available():
+            return SourcePayload(
+                source=self.name,
+                found=False,
+                error="wikipedia cooldown after rate limit",
+            )
+
+        # Bulk-friendly: English is primary narrative bag; Russian only when EN found
+        # or when the import title is clearly Russian (cheaper than always dual-lang).
         pages: dict[str, dict] = {}
-        en = self._find_page(item, "en")
-        if en:
-            pages["en"] = en
-        ru = self._find_page(item, "ru")
-        if ru:
-            pages["ru"] = ru
+        self._rate_limited = False
+        langs = list((self.config.get("wikipedia") or {}).get("langs") or ["en", "ru"])
+        # Prefer en first if present
+        ordered = [l for l in ("en", "ru", "de") if l in langs] + [
+            l for l in langs if l not in ("en", "ru", "de")
+        ]
+
+        for lang in ordered:
+            if self._rate_limited or not self._wiki_available():
+                break
+            # Skip RU/DE probe when English already has a strong page (saves rate budget)
+            if lang != "en" and "en" in pages and len((pages["en"].get("extract") or "")) > 200:
+                # still try RU once if import is Russian-heavy
+                if lang == "ru" and item.russian_title:
+                    pass
+                else:
+                    continue
+            page = self._find_page(item, lang)
+            if page:
+                pages[lang] = page
 
         if not pages:
-            return SourcePayload(source=self.name, found=False, error="not found")
+            err = "rate limited" if self._rate_limited else "not found"
+            return SourcePayload(source=self.name, found=False, error=err)
 
         primary = pages.get("en") or pages.get("ru") or next(iter(pages.values()))
         extract = primary.get("extract") or ""
@@ -149,7 +194,11 @@ class WikipediaSource(BaseSource):
         )
 
     def _find_page(self, item: InputTitle, lang: str) -> Optional[dict]:
+        if not self._wiki_available() or self._rate_limited:
+            return None
         for title in self._candidate_titles(item, lang):
+            if self._rate_limited:
+                return None
             page = self._summary(lang, title)
             if not page:
                 continue
@@ -157,7 +206,9 @@ class WikipediaSource(BaseSource):
             if score >= 5:
                 return page
 
-        # One search fallback
+        # One search fallback (skip if already throttled)
+        if self._rate_limited or not self._wiki_available():
+            return None
         query = item.english_title or item.title
         if item.year:
             query = f"{query} {item.year}"
@@ -166,7 +217,7 @@ class WikipediaSource(BaseSource):
         else:
             query = f"{query} film"
         hit = self._search(lang, query)
-        if hit:
+        if hit and not self._rate_limited:
             page = self._summary(lang, hit)
             if page and self._relevance_score(page, item) >= 4:
                 return page
@@ -185,27 +236,22 @@ class WikipediaSource(BaseSource):
 
         is_tv = item.media_type in {MediaType.SERIES, MediaType.SEASON}
         out: list[str] = []
+        # Best disambiguated form first, then bare title — max 3 tries
         if item.year and not is_tv:
-            out.append(f"{base} ({item.year} film)")
             if lang == "ru":
                 out.append(f"{base} (фильм, {item.year})")
+            out.append(f"{base} ({item.year} film)")
         if is_tv:
-            out.append(f"{base} (TV series)")
-            out.append(base)
             if lang == "ru":
                 out.append(f"{base} (сериал)")
+            out.append(f"{base} (TV series)")
+            out.append(base)
         else:
-            out.append(f"{base} (film)")
             if lang == "ru":
                 out.append(f"{base} (фильм)")
+            else:
+                out.append(f"{base} (film)")
             out.append(base)
-
-        # Also try alternate language title once
-        alt = item.russian_title if base != item.russian_title else item.english_title
-        if alt and alt != base:
-            if item.year and not is_tv:
-                out.append(f"{alt} ({item.year} film)")
-            out.append(f"{alt} (film)" if not is_tv else f"{alt} (TV series)")
 
         seen = set()
         uniq = []
@@ -214,12 +260,15 @@ class WikipediaSource(BaseSource):
             if k not in seen:
                 seen.add(k)
                 uniq.append(t)
-        return uniq[:5]
+        return uniq[:3]
 
     def _summary(self, lang: str, title: str) -> Optional[dict]:
         url = f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{quote(title, safe='')}"
         try:
             data = self.http.get(url)
+        except RateLimitedError:
+            self._on_rate_limit()
+            return None
         except Exception:  # noqa: BLE001
             return None
         if not data or data.get("type") in {
@@ -230,12 +279,8 @@ class WikipediaSource(BaseSource):
         extract = data.get("extract")
         if not extract:
             return None
-        # Enrich short REST summaries with a longer intro extract (English preferred)
+        # REST summary is enough for bulk; skip extra MediaWiki extract call
         page_title = data.get("title") or title
-        if lang == "en" and len(extract) < 900:
-            longer = self._plain_extract(lang, page_title)
-            if longer and len(longer) > len(extract):
-                extract = longer
         page_url = (data.get("content_urls") or {}).get("desktop", {}).get("page")
         return {
             "title": page_title,
@@ -277,11 +322,14 @@ class WikipediaSource(BaseSource):
                     "action": "query",
                     "list": "search",
                     "srsearch": query,
-                    "srlimit": 5,
+                    "srlimit": 3,
                     "format": "json",
                     "utf8": 1,
                 },
             )
+        except RateLimitedError:
+            self._on_rate_limit()
+            return None
         except Exception:  # noqa: BLE001
             return None
         hits = ((data or {}).get("query") or {}).get("search") or []

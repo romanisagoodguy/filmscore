@@ -103,12 +103,34 @@ def extract_all_fields(
     # --- D Narrative ---
     structures = list_matched_labels(bags, maps.get("narrative_structure") or {}, min_raw=1.0)
     craft = scores.get("Narrative_Craft")
-    amb = scores.get("Discussability_Podcast_Potential")
+    # Ambiguity / symbolism: prefer dedicated score; fall back to discussability
+    amb = scores.get("Symbolism_Ambiguity") or scores.get("Discussability_Podcast_Potential")
     raw_unrel, ev_unrel = match_phrases(
-        bags, {"t3": ["unreliable narrator"], "t2": ["unreliable", "cannot trust"]}, allow_t1_alone=False
+        bags,
+        {
+            "t3": ["unreliable narrator", "ненадёжный рассказчик", "ненадежный рассказчик"],
+            "t2": ["unreliable", "cannot trust", "ненадёжн", "ненадежн"],
+        },
+        allow_t1_alone=False,
     )
     raw_sym, _ = match_phrases(
-        bags, {"t2": ["symbol", "metaphor", "allegory", "dream imagery", "surreal"]}, allow_t1_alone=True
+        bags,
+        {
+            "t3": ["symbolic imagery", "dream logic", "символическ", "аллегори"],
+            "t2": [
+                "symbol",
+                "metaphor",
+                "allegory",
+                "dream imagery",
+                "surreal",
+                "символ",
+                "метафор",
+                "аллегор",
+                "сюрреал",
+                "подтекст",
+            ],
+        },
+        allow_t1_alone=True,
     )
 
     # --- E Spiritual ---
@@ -253,21 +275,14 @@ def extract_all_fields(
     if fairy_score >= 6 and easy and easy.score >= 6:
         context = "possible shared/family viewing depending on triggers"
 
-    awards = profile.get("awards_text")
-    prestige = 0.0
-    if awards:
-        al = awards.lower()
-        if "oscar" in al or "academy" in al:
-            prestige = 8.0
-        elif "palme" in al or "cannes" in al or "golden" in al or "bafta" in al:
-            prestige = 7.0
-        elif "nominat" in al or "won" in al:
-            prestige = 5.5
-        else:
-            prestige = 3.0
+    # Awards_Prestige is a real multi-score (engine); field mirrors it for BJ export
+    awards_sr = scores.get("Awards_Prestige")
+    prestige = awards_sr.score if awards_sr else 0.0
 
+    # Overall_Priority_for_Podcast is computed in engine (distinct from Podcast_Priority)
+    overall_sr = scores.get("Overall_Priority_for_Podcast")
     pp = scores.get("Podcast_Priority")
-    overall = pp.score if pp else 0.0
+    overall = overall_sr.score if overall_sr else (pp.score if pp else 0.0)
 
     return {
         # B
@@ -287,11 +302,29 @@ def extract_all_fields(
         "Resolution_Type": resolution,
         # D
         "Narrative_Structure": _join(structures),
-        "Subtext_Level": round(min(10.0, raw_sym * 1.2 + (craft.score * 0.3 if craft else 0)), 2),
-        "Symbolic_Density": round(min(10.0, raw_sym * 1.5), 2),
+        "Subtext_Level": round(
+            min(
+                10.0,
+                max(raw_sym * 1.2, (amb.score if amb else 0) * 0.55)
+                + (craft.score * 0.3 if craft else 0),
+            ),
+            2,
+        ),
+        # Prefer dedicated Symbolism_Ambiguity multi-score; fall back to raw phrase density
+        "Symbolic_Density": round(
+            min(10.0, max(raw_sym * 1.5, (amb.score if amb else 0) * 0.9)),
+            2,
+        ),
         "Ambiguity_Level": round(amb.score if amb else 0.0, 2),
         "Unreliable_Narrator": bool(raw_unrel >= 2),
-        "Visual_Metaphor_Strength": round(min(10.0, raw_sym * 1.3 + (1.5 if content_type == "animation" else 0)), 2),
+        "Visual_Metaphor_Strength": round(
+            min(
+                10.0,
+                max(raw_sym * 1.3, (amb.score if amb else 0) * 0.7)
+                + (1.5 if content_type == "animation" else 0),
+            ),
+            2,
+        ),
         # E
         "Religious_or_Spiritual_Traditions_Referenced": _join(traditions),
         "Rites_Rituals_Practices_Shown": "present" if raw_ritual >= 1.5 else None,
@@ -354,5 +387,12 @@ def extract_all_fields(
         "Trigger_Warnings": _join(triggers),
         "Overall_Priority_for_Podcast": round(overall, 2),
         "Awards_Prestige": round(prestige, 2),
+        # Mirror of multi-score: modern watchability / non-boring deliverability
+        "Modern_Viewer_Deliverability": round(
+            float(scores["Modern_Viewer_Deliverability"].score)
+            if scores.get("Modern_Viewer_Deliverability")
+            else 0.0,
+            2,
+        ),
         "fields_method": "rules_templates_v3",
     }
