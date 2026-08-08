@@ -30,10 +30,16 @@ cache:
 
 # HTTP
 http:
-  delay_sec: 0.2
+  delay_sec: 0.25
   timeout_sec: 20
   max_retries: 2
-  user_agent: "PsychoFilmAnalyzer/1.0 (+research; educational; contact: local)"
+  user_agent: "PsychoFilmAnalyzer/1.0 (+research; educational; contact: romangermanyberlin@gmail.com)"
+  # Sliding 60s window caps (safe side). Keys match host suffix.
+  host_rate_limits_per_min:
+    # Raised automatically to ~40 when WIKIMEDIA_ACCESS_TOKEN is set (highvolume)
+    wikipedia.org: 3               # anonymous fallback; OAuth overrides in config.py
+    kinopoiskapiunofficial.tech: 30
+    letterboxd.com: 20
 
 # Languages preference for lookups
 languages:
@@ -61,20 +67,80 @@ pipeline:
   gather_live_csv: output/gather_live.csv
   gather_live_xlsx: output/gather_live.xlsx
   gather_excel_every: 10   # rewrite rolling Excel every N completed films
+  # Full HTTP reproduction debug (also: psychofilm gather --request-debug)
+  request_debug: false
+  request_debug_path: null   # default: output/request_debug_<timestamp>.txt
+  request_debug_excel_every: 25
+
+# Default gather approach: 1 = sequential (scoring path), 2 = plan+pipelines
+gather:
+  approach: 1
+
+# Approach 2 only (Request Plan + independent pipelines)
+gather_v2:
+  plan_dir: output/gather_v2
+  progress_txt: output/gather_v2/pipeline_progress.txt
+  reports_dir: output/gather_v2/reports
+  checkpoint_jsonl: output/gather_v2/gather_v2_checkpoint.jsonl
+  # Inherit Approach 1 gather_checkpoint.jsonl (skip already-fetched films)
+  inherit_approach1: true
+  approach1_checkpoint: output/gather_checkpoint.jsonl
+  # Wikipedia for ALL catalog films (EN + RU + DE / German)
+  include_wikipedia: true
+  wikipedia_langs: [en, ru, de]
+  # Adaptive RPM for Wikipedia pipeline (Approach 2)
+  # Step up toward max_rpm; on 429 roll back to last stable RPM.
+  wikipedia_adaptive_rpm:
+    # initial_rpm derived from site_delays_sec.wikipedia if omitted
+    min_rpm: 5.0
+    max_rpm: 200.0             # climb stepwise up to 200 req/min
+    step_rpm: 10.0             # absolute step after each success_batch
+    cool_base_sec: 30          # first 429 → GLOBAL wiki pause 30s
+    cool_step_sec: 15          # each further 429 → cool +15s
+    decrease_pct: 0.20         # only used if step_rpm disabled
+    increase_pct: 0.0          # unused when step_rpm > 0
+    success_batch: 8           # N OK at current rate → lock stable, then +step
+    rate_limit_max_attempts: 50  # 429 keeps request deferred, not hard-fail early
+  progress_interval_sec: 3
+  excel_every: 40
+  # Write profile_a2_*.xlsx / profile_a2_live.xlsx during gather (seconds)
+  profile_snapshot_interval_sec: 1200   # 20 minutes
+  site_delays_sec:
+    tmdb: 0.25
+    omdb: 0.30
+    kinopoisk: 0.40
+    letterboxd: 0.50
+    wikipedia: 1.5             # start ~40 RPM (with OAuth); adaptive climbs to 200
 
 # Data source toggles
+# Fast bulk gather: Wiki OFF (use scripts/wiki_enrich_pass.py afterwards).
+# Re-enable wikipedia: true for live Wiki during gather (circuit + RPM 3 apply).
 sources:
   tmdb: true
   omdb: true
   kinopoisk: true
-  wikipedia: true
+  wikipedia: false               # deferred to wiki pass for catalog speed
   letterboxd: true
   discourse_web: false   # set true only if you accept extra latency / scraping
 
 # Wikipedia bulk settings (narrative bags; polite rate limits)
 wikipedia:
-  # EN only for full-catalog speed; RU plots come from TMDB/Kinopoisk
+  # EN only for full-catalog speed in Approach 1; A2 uses wiki_resolve_v2 (search on)
   langs: [en]
+  max_candidates: 3              # bare + (film) + year form (Approach 1 data source)
+  search_fallback: true          # MediaWiki search when direct titles miss
+  cooldown_sec: 120              # pause after single HTTP 429
+  circuit_429_threshold: 3       # N × 429 inside window → open circuit
+  circuit_window_sec: 600        # 10 minutes
+  circuit_open_sec: 1200         # 20 minutes skip all Wiki calls
+  # OAuth credentials live in .env (WIKIMEDIA_*); contact email used in User-Agent
+  oauth:
+    contact_email: romangermanyberlin@gmail.com
+
+# Letterboxd bulk settings
+letterboxd:
+  use_search: false              # /search/ hits Cloudflare 403 — slug-only
+  max_slugs: 2                   # bare title first, then title-year
 
 # Description generation
 description:

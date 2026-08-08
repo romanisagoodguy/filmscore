@@ -19,8 +19,14 @@ from psychofilm_analyzer.utils.text import safe_int
 
 logger = logging.getLogger(__name__)
 
-# After a 429, pause further Wikipedia calls for this many seconds
-WIKI_COOLDOWN_SEC = 45.0
+# Defaults (overridable via config.wikipedia.*)
+DEFAULT_WIKI_COOLDOWN_SEC = 120.0
+DEFAULT_MAX_CANDIDATES = 1
+DEFAULT_SEARCH_FALLBACK = False
+# Circuit breaker: after N × 429 inside window → open circuit for open_sec
+DEFAULT_CIRCUIT_429_THRESHOLD = 3
+DEFAULT_CIRCUIT_WINDOW_SEC = 600.0  # 10 minutes
+DEFAULT_CIRCUIT_OPEN_SEC = 1200.0  # 20 minutes
 
 FILM_MARKERS = (
     "film",
@@ -71,31 +77,80 @@ class WikipediaSource(BaseSource):
         super().__init__(*args, **kwargs)
         self._cooldown_until = 0.0
         self._rate_limited = False
+        self._circuit_open_until = 0.0
+        self._recent_429: list[float] = []
+        wiki_cfg = (self.config.get("wikipedia") or {}) if isinstance(self.config, dict) else {}
+        self._cooldown_sec = float(wiki_cfg.get("cooldown_sec", DEFAULT_WIKI_COOLDOWN_SEC))
+        self._max_candidates = int(wiki_cfg.get("max_candidates", DEFAULT_MAX_CANDIDATES))
+        self._search_fallback = bool(wiki_cfg.get("search_fallback", DEFAULT_SEARCH_FALLBACK))
+        self._circuit_threshold = int(
+            wiki_cfg.get("circuit_429_threshold", DEFAULT_CIRCUIT_429_THRESHOLD)
+        )
+        self._circuit_window_sec = float(
+            wiki_cfg.get("circuit_window_sec", DEFAULT_CIRCUIT_WINDOW_SEC)
+        )
+        self._circuit_open_sec = float(
+            wiki_cfg.get("circuit_open_sec", DEFAULT_CIRCUIT_OPEN_SEC)
+        )
 
     def _on_rate_limit(self) -> None:
         self._rate_limited = True
-        self._cooldown_until = time.monotonic() + WIKI_COOLDOWN_SEC
-        logger.warning("Wikipedia cooldown %.0fs after rate limit", WIKI_COOLDOWN_SEC)
+        now = time.monotonic()
+        self._cooldown_until = now + self._cooldown_sec
+        # Sliding window of 429s for circuit breaker
+        self._recent_429.append(now)
+        cutoff = now - self._circuit_window_sec
+        self._recent_429 = [t for t in self._recent_429 if t >= cutoff]
+        if len(self._recent_429) >= max(1, self._circuit_threshold):
+            self._circuit_open_until = now + self._circuit_open_sec
+            self._recent_429.clear()
+            logger.warning(
+                "Wikipedia CIRCUIT OPEN %.0fs after %s×429 in %.0fs window — skipping Wiki",
+                self._circuit_open_sec,
+                self._circuit_threshold,
+                self._circuit_window_sec,
+            )
+        else:
+            logger.warning(
+                "Wikipedia cooldown %.0fs after rate limit (%s/%s in window)",
+                self._cooldown_sec,
+                len(self._recent_429),
+                self._circuit_threshold,
+            )
 
     def _wiki_available(self) -> bool:
-        if time.monotonic() < self._cooldown_until:
+        now = time.monotonic()
+        if now < self._circuit_open_until:
             return False
+        if now < self._cooldown_until:
+            return False
+        # Cooldown / circuit expired — allow new attempts
         self._rate_limited = False
         return True
+
+    def _unavailable_reason(self) -> str:
+        now = time.monotonic()
+        if now < self._circuit_open_until:
+            left = int(self._circuit_open_until - now)
+            return f"wikipedia circuit open (~{left}s left)"
+        if now < self._cooldown_until:
+            left = int(self._cooldown_until - now)
+            return f"wikipedia cooldown after rate limit (~{left}s left)"
+        return "wikipedia unavailable"
 
     def _fetch(self, item: InputTitle) -> SourcePayload:
         if not self._wiki_available():
             return SourcePayload(
                 source=self.name,
                 found=False,
-                error="wikipedia cooldown after rate limit",
+                error=self._unavailable_reason(),
             )
 
-        # Bulk-friendly: English is primary narrative bag; Russian only when EN found
-        # or when the import title is clearly Russian (cheaper than always dual-lang).
+        # Bulk-friendly: English is primary narrative bag; RU only when configured
+        # and budget allows. Prefer few HTTP calls over multi-candidate thrash.
         pages: dict[str, dict] = {}
         self._rate_limited = False
-        langs = list((self.config.get("wikipedia") or {}).get("langs") or ["en", "ru"])
+        langs = list((self.config.get("wikipedia") or {}).get("langs") or ["en"])
         # Prefer en first if present
         ordered = [l for l in ("en", "ru", "de") if l in langs] + [
             l for l in langs if l not in ("en", "ru", "de")
@@ -106,7 +161,7 @@ class WikipediaSource(BaseSource):
                 break
             # Skip RU/DE probe when English already has a strong page (saves rate budget)
             if lang != "en" and "en" in pages and len((pages["en"].get("extract") or "")) > 200:
-                # still try RU once if import is Russian-heavy
+                # still try RU once if import is Russian-heavy and explicitly configured
                 if lang == "ru" and item.russian_title:
                     pass
                 else:
@@ -197,7 +252,7 @@ class WikipediaSource(BaseSource):
         if not self._wiki_available() or self._rate_limited:
             return None
         for title in self._candidate_titles(item, lang):
-            if self._rate_limited:
+            if self._rate_limited or not self._wiki_available():
                 return None
             page = self._summary(lang, title)
             if not page:
@@ -206,7 +261,9 @@ class WikipediaSource(BaseSource):
             if score >= 5:
                 return page
 
-        # One search fallback (skip if already throttled)
+        # Search fallback OFF by default in bulk (extra calls → more 429s)
+        if not self._search_fallback:
+            return None
         if self._rate_limited or not self._wiki_available():
             return None
         query = item.english_title or item.title
@@ -236,22 +293,24 @@ class WikipediaSource(BaseSource):
 
         is_tv = item.media_type in {MediaType.SERIES, MediaType.SEASON}
         out: list[str] = []
-        # Best disambiguated form first, then bare title — max 3 tries
-        if item.year and not is_tv:
-            if lang == "ru":
-                out.append(f"{base} (фильм, {item.year})")
-            out.append(f"{base} ({item.year} film)")
+        # Bare first (many pages have no disambiguator), then (film), then year form.
+        out.append(base)
         if is_tv:
             if lang == "ru":
                 out.append(f"{base} (сериал)")
-            out.append(f"{base} (TV series)")
-            out.append(base)
+            else:
+                out.append(f"{base} (TV series)")
+                if item.year:
+                    out.append(f"{base} ({item.year} TV series)")
         else:
             if lang == "ru":
                 out.append(f"{base} (фильм)")
+                if item.year:
+                    out.append(f"{base} (фильм, {item.year})")
             else:
                 out.append(f"{base} (film)")
-            out.append(base)
+                if item.year:
+                    out.append(f"{base} ({item.year} film)")
 
         seen = set()
         uniq = []
@@ -260,7 +319,7 @@ class WikipediaSource(BaseSource):
             if k not in seen:
                 seen.add(k)
                 uniq.append(t)
-        return uniq[:3]
+        return uniq[: max(1, self._max_candidates)]
 
     def _summary(self, lang: str, title: str) -> Optional[dict]:
         url = f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{quote(title, safe='')}"

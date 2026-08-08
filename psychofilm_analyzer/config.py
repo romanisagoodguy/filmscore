@@ -50,7 +50,40 @@ def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
         "tmdb": os.getenv("TMDB_API_KEY", "").strip(),
         "omdb": os.getenv("OMDB_API_KEY", "").strip(),
         "kinopoisk": os.getenv("KINOPOISK_API_KEY", "").strip(),
+        # Wikimedia OAuth (meta.wikimedia.org) — used for Wikipedia REST/API
+        "wikipedia_email": os.getenv(
+            "WIKIMEDIA_CONTACT_EMAIL",
+            os.getenv("WIKIPEDIA_CONTACT_EMAIL", "romangermanyberlin@gmail.com"),
+        ).strip(),
+        "wikipedia_client_id": os.getenv(
+            "WIKIMEDIA_CLIENT_ID", os.getenv("WIKIPEDIA_CLIENT_ID", "")
+        ).strip(),
+        "wikipedia_client_secret": os.getenv(
+            "WIKIMEDIA_CLIENT_SECRET", os.getenv("WIKIPEDIA_CLIENT_SECRET", "")
+        ).strip(),
+        "wikipedia_access_token": os.getenv(
+            "WIKIMEDIA_ACCESS_TOKEN", os.getenv("WIKIPEDIA_ACCESS_TOKEN", "")
+        ).strip(),
     }
+    # If OAuth token present, raise default wiki host RPM (highvolume ≈ 5000/hour)
+    if cfg["api_keys"].get("wikipedia_access_token"):
+        http = cfg.setdefault("http", {})
+        rpm = http.setdefault("host_rate_limits_per_min", {})
+        # polite default under 5000/h (~83/min): 40/min unless user already set
+        if "wikipedia.org" not in rpm or int(rpm.get("wikipedia.org") or 0) <= 3:
+            rpm["wikipedia.org"] = int(os.getenv("WIKIPEDIA_RPM", "40"))
+        # A2 wiki delay: ~1.5s between calls if still at slow 15s
+        a2 = cfg.setdefault("gather_v2", {})
+        delays = a2.setdefault("site_delays_sec", {})
+        if float(delays.get("wikipedia") or 0) >= 10:
+            delays["wikipedia"] = float(os.getenv("WIKIPEDIA_DELAY_SEC", "1.5"))
+        wadapt = a2.setdefault("wikipedia_adaptive_rpm", {})
+        wadapt.setdefault("min_rpm", 5.0)
+        wadapt.setdefault("max_rpm", 200.0)
+        wadapt.setdefault("step_rpm", 10.0)
+        if float(wadapt.get("initial_rpm") or 0) < 5:
+            d0 = float(delays.get("wikipedia", 1.5))
+            wadapt["initial_rpm"] = max(5.0, min(40.0, 60.0 / max(d0, 0.3)))
     return cfg
 
 

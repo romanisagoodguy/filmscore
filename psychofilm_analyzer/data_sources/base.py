@@ -25,6 +25,12 @@ class BaseSource(ABC):
         key = item.cache_key()
         cached = self.cache.get(self.name, key)
         if cached is not None:
+            dbg = getattr(self.http, "debug_log", None)
+            if dbg is not None:
+                try:
+                    dbg.log_cache_hit(self.name, key)
+                except Exception:  # noqa: BLE001
+                    pass
             try:
                 return SourcePayload(**cached)
             except TypeError:
@@ -39,6 +45,12 @@ class BaseSource(ABC):
         except Exception as exc:  # noqa: BLE001
             logger.warning("[%s] fetch failed for %s: %s", self.name, item.title, exc)
             payload = SourcePayload(source=self.name, found=False, error=str(exc))
+            dbg = getattr(self.http, "debug_log", None)
+            if dbg is not None:
+                try:
+                    dbg.log_source_event(self.name, f"fetch_exception: {exc}")
+                except Exception:  # noqa: BLE001
+                    pass
         # Do not cache transient rate-limit / cooldown misses (retry later)
         err = (payload.error or "").lower()
         if payload.found or ("rate limit" not in err and "cooldown" not in err):

@@ -105,6 +105,54 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Ignore gather_checkpoint.jsonl and re-fetch all titles",
     )
+    g.add_argument(
+        "--request-debug",
+        action="store_true",
+        help=(
+            "Write full HTTP reproduction debug for every film: text log + "
+            "CSV tables + Excel (requests/films/sites/summary). "
+            "Contains API keys — treat as secret."
+        ),
+    )
+    g.add_argument(
+        "--request-debug-path",
+        default=None,
+        help=(
+            "Path for request debug text log (default: "
+            "output/request_debug_<timestamp>.txt). Tables use same stem."
+        ),
+    )
+    g.add_argument(
+        "--request-debug-no-secrets",
+        action="store_true",
+        help="Redact API keys in debug commands/tables (harder to reproduce)",
+    )
+    g.add_argument(
+        "--request-debug-excel-every",
+        type=int,
+        default=25,
+        help="Rewrite request-debug Excel every N films (default 25; CSVs update live)",
+    )
+    g.add_argument(
+        "--approach",
+        type=int,
+        choices=[1, 2],
+        default=1,
+        help=(
+            "Gather approach: 1 = sequential film-by-film (default, scoring-compatible); "
+            "2 = Request Plan + independent per-site pipelines"
+        ),
+    )
+    g.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Approach 2 only: build Request Plan Excel/JSONL and exit (no HTTP)",
+    )
+    g.add_argument(
+        "--no-inherit-a1",
+        action="store_true",
+        help="Approach 2 only: do not skip films already in Approach 1 gather_checkpoint.jsonl",
+    )
 
     # score (legacy v1 engine)
     s = sub.add_parser("score", help="Enrich + score (legacy v1 single Psycho_Score engine)")
@@ -153,12 +201,18 @@ def cmd_gather(args: argparse.Namespace) -> int:
     configure_logging(args.verbose)
     config = load_config(args.config)
     _apply_source_flags(config, args)
-    pipe = Pipeline(config, load_dictionaries())
 
     items = _collect_items(args)
     if not items:
         print("Provide --input, --title, and/or --eval-set.", file=sys.stderr)
         return 2
+
+    approach = int(getattr(args, "approach", None) or (config.get("gather") or {}).get("approach", 1) or 1)
+    if approach == 2:
+        return _cmd_gather_approach2(args, config, items)
+
+    # ----- Approach 1 (sequential) — original path, unchanged internals -----
+    pipe = Pipeline(config, load_dictionaries())
 
     from psychofilm_analyzer.utils.run_plan import (
         build_gather_plan,
@@ -189,10 +243,47 @@ def cmd_gather(args: argparse.Namespace) -> int:
         },
         resume=resume,
     )
-    print(f"PsychoFilm Analyzer v{__version__} — GATHER ONLY")
+    print(f"PsychoFilm Analyzer v{__version__} — GATHER ONLY (Approach 1 sequential)")
     print_run_plan(plan)
     write_run_plan(plan, Path(out_dir) / "pipeline_run_plan.json")
     print(f"  Run plan saved → {out_dir}/pipeline_run_plan.json")
+
+    request_debug = bool(getattr(args, "request_debug", False)) or bool(
+        (config.get("pipeline") or {}).get("request_debug", False)
+    )
+    dbg_paths: dict = {}
+    if request_debug:
+        from datetime import datetime, timezone
+
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        dbg_path = getattr(args, "request_debug_path", None) or (
+            (config.get("pipeline") or {}).get("request_debug_path")
+            or f"{out_dir}/request_debug_{ts}.txt"
+        )
+        include_secrets = not bool(getattr(args, "request_debug_no_secrets", False))
+        excel_every = int(
+            getattr(args, "request_debug_excel_every", None)
+            or (config.get("pipeline") or {}).get("request_debug_excel_every", 25)
+        )
+        dbg = pipe.attach_request_debug(
+            dbg_path,
+            include_secrets=include_secrets,
+            write_tables=True,
+            excel_every_films=excel_every,
+            meta={
+                "mode": "gather",
+                "approach": 1,
+                "input": source_file or "",
+                "titles_total": len(items),
+                "resume": resume,
+                "cli": "psychofilm gather --approach 1 --request-debug",
+            },
+        )
+        dbg_paths = dbg.output_paths()
+        print("\nREQUEST DEBUG ENABLED (all films in this run)")
+        print("  WARNING: files may contain full API keys — do not commit/share.")
+        for k, pth in dbg_paths.items():
+            print(f"  {k}: {pth}")
 
     session_profiles = pipe.gather(items, resume=resume)
 
@@ -264,6 +355,68 @@ def cmd_gather(args: argparse.Namespace) -> int:
     print("\nOutputs:")
     for k, path in written.items():
         print(f"  {k}: {path}")
+    if dbg_paths:
+        print("\nRequest debug outputs:")
+        for k, path in dbg_paths.items():
+            print(f"  {k}: {path}")
+    return 0
+
+
+def _cmd_gather_approach2(
+    args: argparse.Namespace,
+    config: dict,
+    items: list,
+) -> int:
+    """Approach 2 entry — separate from sequential Pipeline.gather."""
+    from psychofilm_analyzer.gather_v2.runner import run_gather_v2
+    from psychofilm_analyzer.io.input_loader import load_titles
+
+    out_dir = (config.get("output") or {}).get("dir", "output")
+    resume = not getattr(args, "no_resume", False)
+    request_debug = bool(getattr(args, "request_debug", False))
+    plan_only = bool(getattr(args, "plan_only", False))
+
+    # --no-inherit-a1 forces False; otherwise config gather_v2.inherit_approach1 (default True)
+    if getattr(args, "no_inherit_a1", False):
+        inherit_a1 = False
+    else:
+        inherit_a1 = bool((config.get("gather_v2") or {}).get("inherit_approach1", True))
+
+    # With inherit + -n N: load FULL catalog, process N pending films (not first N of file)
+    pending_limit = None
+    if inherit_a1 and getattr(args, "limit", None):
+        pending_limit = int(args.limit)
+        if getattr(args, "input", None):
+            items = load_titles(args.input)  # full list for A1 inherit keys
+            print(f"  inherit+limit: loaded full catalog {len(items)} titles; "
+                  f"will process up to {pending_limit} pending")
+
+    print(f"PsychoFilm Analyzer v{__version__} — GATHER Approach 2")
+    print("  Request Plan + independent per-site pipelines")
+    print(f"  catalog_items: {len(items)}")
+    print(f"  resume: {resume}")
+    print(f"  plan_only: {plan_only}")
+    print(f"  inherit_a1: {inherit_a1}")
+    print(f"  pending_limit: {pending_limit}")
+    print(f"  output: {out_dir}/gather_v2/")
+    print("  ranking/scoring: use Approach 1 profiles for now")
+
+    summary = run_gather_v2(
+        items,
+        config,
+        resume=resume,
+        plan_only=plan_only,
+        request_debug=request_debug,
+        inherit_approach1=inherit_a1,
+        pending_limit=pending_limit,
+    )
+    print("\nApproach 2 complete.")
+    for k, v in summary.items():
+        if k == "exports" and isinstance(v, dict):
+            for ek, ev in v.items():
+                print(f"  export.{ek}: {ev}")
+        else:
+            print(f"  {k}: {v}")
     return 0
 
 

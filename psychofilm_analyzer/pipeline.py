@@ -41,12 +41,34 @@ class Pipeline:
             ttl_days=int(cache_cfg.get("ttl_days", 30)),
             enabled=bool(cache_cfg.get("enabled", True)),
         )
+        from psychofilm_analyzer.utils.wikipedia_auth import (
+            wikipedia_auth_status,
+            wikipedia_headers,
+            wikipedia_user_agent,
+        )
+
+        ua = wikipedia_user_agent(self.config) or http_cfg.get(
+            "user_agent", "PsychoFilmAnalyzer/1.0"
+        )
         self.http = HttpClient(
             delay_sec=float(http_cfg.get("delay_sec", 0.6)),
             timeout_sec=float(http_cfg.get("timeout_sec", 25)),
             max_retries=int(http_cfg.get("max_retries", 3)),
-            user_agent=http_cfg.get("user_agent", "PsychoFilmAnalyzer/1.0"),
+            user_agent=ua,
+            host_rate_limits_per_min=http_cfg.get("host_rate_limits_per_min"),
         )
+        # Wikimedia OAuth Bearer for *.wikipedia.org (Approach 1 data source)
+        self.http.set_wikipedia_auth(wikipedia_headers(self.config))
+        st = wikipedia_auth_status(self.config)
+        if st.get("access_token_set"):
+            import logging as _logging
+
+            _logging.getLogger(__name__).info(
+                "Wikipedia OAuth configured (email=%s token=%s client_id=%s)",
+                st.get("email"),
+                st.get("access_token_prefix"),
+                "yes" if st.get("client_id_set") else "no",
+            )
         keys = self.config.get("api_keys") or {}
         src_flags = self.config.get("sources") or {}
         self.sources = []
@@ -93,6 +115,39 @@ class Pipeline:
         except Exception as exc:  # noqa: BLE001
             logger.exception("Gather failed for %s", item.title)
             return EnrichmentProfile(input=item, error=str(exc))
+
+    def attach_request_debug(
+        self,
+        path: str | Path,
+        *,
+        include_secrets: bool = True,
+        write_tables: bool = True,
+        excel_every_films: int = 25,
+        meta: Optional[dict[str, Any]] = None,
+    ) -> Any:
+        """Enable full request reproduction log (text + CSV/Excel tables)."""
+        from psychofilm_analyzer.utils.request_debug import RequestDebugLog
+
+        http_cfg = self.config.get("http") or {}
+        pipe_cfg = self.config.get("pipeline") or {}
+        dbg = RequestDebugLog(
+            path,
+            user_agent=http_cfg.get("user_agent", "PsychoFilmAnalyzer/1.0"),
+            delay_sec=float(http_cfg.get("delay_sec", 0.6)),
+            timeout_sec=float(http_cfg.get("timeout_sec", 25)),
+            max_retries=int(http_cfg.get("max_retries", 3)),
+            include_secrets=include_secrets,
+            write_tables=write_tables,
+            excel_every_films=int(
+                excel_every_films
+                if excel_every_films is not None
+                else pipe_cfg.get("request_debug_excel_every", 25)
+            ),
+            meta=meta or {},
+        )
+        self.http.attach_debug_log(dbg)
+        self._request_debug = dbg  # type: ignore[attr-defined]
+        return dbg
 
     @staticmethod
     def resume_key(item: InputTitle) -> str:
@@ -205,20 +260,62 @@ class Pipeline:
             iterator = tqdm(items, desc="Gather", unit="title")
 
         processed_new = 0
+        dbg = getattr(self, "_request_debug", None) or getattr(self.http, "debug_log", None)
+        # Map catalog position (1-based) for cell reporting
+        catalog_pos: dict[int, int] = {id(it): i + 1 for i, it in enumerate(items)}
+
         for item in iterator:
             key = self.resume_key(item)
             if key in done_keys:
                 continue
+
+            # Live Excel row after append: header=1, film N → row N+1
+            predicted_live_row = total_done + 1 + 1  # next film index + header
+
+            if dbg is not None:
+                from psychofilm_analyzer.utils.request_debug import FilmContext
+
+                film_seq = processed_new + 1
+                dbg.begin_film(
+                    FilmContext(
+                        film_seq=film_seq,
+                        catalog_index=catalog_pos.get(id(item)),
+                        excel_sheet=item.source_sheet,
+                        excel_row=item.source_row,
+                        live_excel_sheet="profiles",
+                        live_excel_row=predicted_live_row,
+                        title=item.title,
+                        year=item.year,
+                        english_title=item.english_title,
+                        russian_title=item.russian_title,
+                        import_title=item.import_title,
+                        import_year=item.import_year,
+                        media_type=item.media_type.value if item.media_type else None,
+                        source_file=item.source_file,
+                        resume_key=key,
+                        imdb_id_hint=item.imdb_id_hint,
+                        tmdb_id_hint=item.tmdb_id_hint,
+                        kinopoisk_id_hint=item.kinopoisk_id_hint,
+                    )
+                )
+
             profile = self.gather_item(item)
             profiles.append(profile)
             done_keys.add(key)
             processed_new += 1
             total_done = len(done_keys)
             payload = profile.to_json_dict()
+            ckpt_line: Optional[int] = None
             try:
                 payload["_resume_key"] = key
                 with ckpt.open("a", encoding="utf-8") as fh:
                     fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                # 1-based line count in checkpoint after write
+                try:
+                    with ckpt.open("r", encoding="utf-8") as rh:
+                        ckpt_line = sum(1 for ln in rh if ln.strip())
+                except OSError:
+                    ckpt_line = total_done
             except OSError as exc:
                 logger.warning("Checkpoint append failed: %s", exc)
 
@@ -237,6 +334,27 @@ class Pipeline:
                         )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Live export failed for %s: %s", item.title, exc)
+
+            if dbg is not None:
+                found_map = {}
+                try:
+                    sources = (payload.get("sources") or {}) if isinstance(payload, dict) else {}
+                    if isinstance(sources, dict):
+                        for sn, sv in sources.items():
+                            if isinstance(sv, dict):
+                                found_map[str(sn)] = bool(sv.get("found"))
+                    # fallback from profile object
+                    if not found_map and hasattr(profile, "sources"):
+                        for sn, sp in (profile.sources or {}).items():
+                            found_map[str(sn)] = bool(getattr(sp, "found", False))
+                except Exception:  # noqa: BLE001
+                    pass
+                dbg.end_film(
+                    found_sources=found_map or None,
+                    error=getattr(profile, "error", None),
+                    gather_checkpoint_line=ckpt_line,
+                    live_excel_row=total_done + 1,  # header + N films
+                )
 
             if progress_every and processed_new % progress_every == 0:
                 self._write_gather_progress(
@@ -271,6 +389,12 @@ class Pipeline:
         )
         if live_export:
             logger.info("Live files: txt=%s csv=%s xlsx=%s", live_txt, live_csv, live_xlsx)
+        if dbg is not None:
+            try:
+                dbg.close()
+                logger.info("Request debug log closed → %s", getattr(dbg, "path", "?"))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Request debug close failed: %s", exc)
         return profiles
 
     def load_gather_checkpoint(

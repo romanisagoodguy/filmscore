@@ -112,7 +112,12 @@ class KinopoiskSource(BaseSource):
                     if name_en_p and len(cast_en) < 15:
                         cast_en.append(name_en_p)
 
-        keywords = self._keywords(kp_id) if kp_id else []
+        # Keywords endpoint /api/v2.1/films/{id}/keywords returns 400 for all IDs
+        # ("No static resource") — do not call it. Derive light tags from genres/slogan.
+        keywords = list(genres)
+        slogan = (src.get("slogan") or "").strip()
+        if slogan and slogan not in keywords:
+            keywords.append(slogan)
         description = src.get("description") or src.get("shortDescription") or film.get("description")
         rating = (
             safe_float(src.get("ratingKinopoisk"))
@@ -177,6 +182,7 @@ class KinopoiskSource(BaseSource):
         )
 
     def _search_film(self, item: InputTitle) -> Optional[dict]:
+        # Prefer English / primary title first (fewer KP search calls)
         for title in self._search_titles(item):
             data = self.http.get(
                 f"{KP_API}/v2.1/films/search-by-keyword",
@@ -184,14 +190,6 @@ class KinopoiskSource(BaseSource):
                 headers=self._headers(),
             )
             films = (data or {}).get("films") or []
-            if not films:
-                # v2.1 alternative
-                data = self.http.get(
-                    f"{KP_API}/v2.1/films/search-by-keyword",
-                    params={"keyword": title},
-                    headers=self._headers(),
-                )
-                films = (data or {}).get("films") or []
             if films:
                 return self._pick(films, item)
         return None
@@ -224,14 +222,3 @@ class KinopoiskSource(BaseSource):
         except Exception:  # noqa: BLE001
             return None
 
-    def _keywords(self, kp_id: Any) -> list[str]:
-        # Keywords endpoint is flaky / 400 on some IDs — fail soft without retries noise
-        try:
-            data = self.http.get(
-                f"{KP_API}/v2.1/films/{kp_id}/keywords",
-                headers=self._headers(),
-            )
-            items = (data or {}).get("keywords") or []
-            return [k.get("keyword") for k in items if k.get("keyword")]
-        except Exception:  # noqa: BLE001
-            return []
