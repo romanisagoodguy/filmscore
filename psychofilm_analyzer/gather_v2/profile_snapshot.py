@@ -5,15 +5,16 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from psychofilm_analyzer.utils.localtime import now_str
 
 logger = logging.getLogger(__name__)
 
 
-def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+def _now() -> str:
+    return now_str()
 
 
 class ProfileSnapshotWriter:
@@ -46,7 +47,7 @@ class ProfileSnapshotWriter:
         self.snapshot_count = 0
 
     def _log(self, msg: str) -> None:
-        line = f"[{_utc()}] {msg}"
+        line = f"[{_now()}] {msg}"
         logger.info("%s", msg)
         print(f"  profile snapshot: {msg}", flush=True)
         if self.log_path:

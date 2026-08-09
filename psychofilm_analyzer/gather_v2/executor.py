@@ -6,12 +6,12 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 import requests
 
+from psychofilm_analyzer.utils.localtime import now_str, stamp_local
 from psychofilm_analyzer.gather_v2.adaptive_rpm import AdaptiveRpmController
 from psychofilm_analyzer.gather_v2.models import (
     OPEN_WORK,
@@ -31,8 +31,8 @@ from psychofilm_analyzer.gather_v2.resolver import deps_ready, resolve_request
 logger = logging.getLogger(__name__)
 
 
-def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "Z"
+def _now() -> str:
+    return now_str(with_ms=True)
 
 
 def _py_lit(obj: Any) -> str:
@@ -174,7 +174,9 @@ class SitePipeline(threading.Thread):
             self._execute(req)
             self._done += 1
             if self.progress:
-                self.progress.note_completion(self.site)
+                self.progress.note_completion(
+                    self.site, request_id=getattr(req, "request_id", "") or ""
+                )
                 if self.adaptive and hasattr(self.progress, "set_adaptive_snapshot"):
                     try:
                         self.progress.set_adaptive_snapshot(self.site, self.adaptive.snapshot())
@@ -317,7 +319,7 @@ class SitePipeline(threading.Thread):
             reproducible_command=repro_cmd or getattr(req, "reproducible_command", "") or "",
             deferred=mark,
             deferred_reason=reason,
-            finished_at=_utc(),
+            finished_at=_now(),
             result_preview=(preview or "")[:200],
         )
         logger.info(
@@ -342,7 +344,7 @@ class SitePipeline(threading.Thread):
                         req.request_id,
                         status=STATUS_SKIPPED,
                         error=err,
-                        finished_at=_utc(),
+                        finished_at=_now(),
                     )
                     continue
                 if "earlier letterboxd" in err:
@@ -350,7 +352,7 @@ class SitePipeline(threading.Thread):
                         req.request_id,
                         status=STATUS_SKIPPED,
                         error=err,
-                        finished_at=_utc(),
+                        finished_at=_now(),
                     )
                     continue
                 if "empty" in err or "no " in err:
@@ -358,20 +360,20 @@ class SitePipeline(threading.Thread):
                         req.request_id,
                         status=STATUS_SKIPPED,
                         error=err,
-                        finished_at=_utc(),
+                        finished_at=_now(),
                     )
                     continue
                 self.store.update_fields(
                     req.request_id,
                     status=STATUS_SKIPPED,
                     error=err,
-                    finished_at=_utc(),
+                    finished_at=_now(),
                 )
                 continue
             claimed = self.store.update_fields(
                 req.request_id,
                 status=STATUS_RUNNING,
-                started_at=_utc(),
+                started_at=_now(),
                 url=req.url,
                 params_json=req.params_json,
                 attempts=int(req.attempts or 0) + 1,
@@ -408,7 +410,7 @@ class SitePipeline(threading.Thread):
                 status=STATUS_FAILED,
                 error="empty url",
                 reproducible_command=repro,
-                finished_at=_utc(),
+                finished_at=_now(),
             )
             self._last_req = time.monotonic()
             return
@@ -494,10 +496,11 @@ class SitePipeline(threading.Thread):
                     http_status=resp.status_code,
                     duration_ms=round(ms, 1),
                     error="",
-                    reproducible_command="",
+                    # Keep command so pipeline reports can retest successes too
+                    reproducible_command=repro or "",
                     deferred="",
                     deferred_reason="",
-                    finished_at=_utc(),
+                    finished_at=_now(),
                     result_path=str(path),
                     result_preview=preview[:300],
                 )
@@ -521,7 +524,7 @@ class SitePipeline(threading.Thread):
                     reproducible_command=repro,
                     deferred="",
                     deferred_reason="omdb_not_found",
-                    finished_at=_utc(),
+                    finished_at=_now(),
                     result_path=str(path),
                     result_preview=preview[:300],
                 )
@@ -531,7 +534,7 @@ class SitePipeline(threading.Thread):
                     err=err_txt,
                     repro_cmd=repro,
                     classification="omdb_not_found",
-                    captured_at=_utc(),
+                    captured_at=_now(),
                 )
                 return
 
@@ -546,7 +549,7 @@ class SitePipeline(threading.Thread):
                     reproducible_command=repro,
                     deferred="",
                     deferred_reason="not_found",
-                    finished_at=_utc(),
+                    finished_at=_now(),
                     result_path=str(path),
                     result_preview=preview[:300],
                 )
@@ -556,7 +559,7 @@ class SitePipeline(threading.Thread):
                     err=err_txt,
                     repro_cmd=repro,
                     classification="not_found",
-                    captured_at=_utc(),
+                    captured_at=_now(),
                 )
                 return
 
@@ -579,7 +582,7 @@ class SitePipeline(threading.Thread):
                     err=err_txt,
                     repro_cmd=repro,
                     classification="cloudflare",
-                    captured_at=_utc(),
+                    captured_at=_now(),
                 )
                 return
 
@@ -603,7 +606,7 @@ class SitePipeline(threading.Thread):
                 err=err_txt,
                 repro_cmd=repro,
                 classification=reason,
-                captured_at=_utc(),
+                captured_at=_now(),
             )
             if self.adaptive:
                 self.adaptive.on_other_result(
@@ -627,7 +630,7 @@ class SitePipeline(threading.Thread):
                 err=err_x,
                 repro_cmd=repro,
                 classification="network_error",
-                captured_at=_utc(),
+                captured_at=_now(),
             )
             if self.adaptive:
                 self.adaptive.on_other_result(ok=False, request_id=req.request_id)
@@ -682,13 +685,11 @@ class SitePipeline(threading.Thread):
         if "сериал" in title_l or " season" in title_l or "s0" in (req.english_title or "").lower():
             is_tv = True
 
-        def throttle() -> None:
-            if self.adaptive:
-                self.adaptive.wait_turn(self.stop_event)
-                self.adaptive.mark_request_started()
-            else:
-                self._throttle()
-            self._last_req = time.monotonic()
+        # Adaptive RPM is applied ONCE per plan row in run() via _throttle().
+        # Inside multi-step resolve we only use a micro-gap between HTTP calls
+        # (see inter_http_gap_sec) so a 4-step not_found is not charged 4× DELAY.
+        if self.adaptive:
+            self.adaptive.mark_request_started()
 
         t0 = time.monotonic()
         result = resolve_wikipedia(
@@ -699,8 +700,10 @@ class SitePipeline(threading.Thread):
             year=req.year,
             is_tv=is_tv,
             headers=headers,
-            timeout=self.timeout_sec,
-            throttle=throttle,
+            timeout=min(float(self.timeout_sec), 15.0),
+            throttle=None,  # plan-row spacing already done; no full delay per GET
+            inter_http_gap_sec=0.08,
+            max_direct_titles=2,  # bare + (film); then search (skip year form bulk)
             max_search_hits=3,
             # 429 is transient: cool + re-fetch SAME url until durable 404/200
             max_429_retries=6,
@@ -734,7 +737,7 @@ class SitePipeline(threading.Thread):
             result_preview=preview,
             http_status=http_st,
             duration_ms=round(ms, 1),
-            finished_at=_utc(),
+            finished_at=_now(),
         )
         # Full detail lives in responses/<id>.json; human report is WIKI_REPORT.txt
         # (regenerated by ProgressReporter with ALL finished requests + commands).
@@ -907,7 +910,7 @@ class SitePipeline(threading.Thread):
             f"endpoint: {req.endpoint_type}\n"
             f"CLASSIFICATION: {classification or req.deferred_reason or 'unknown'}\n"
             f"CAPTURED_HTTP: {status_code}\n"
-            f"CAPTURED_AT: {captured_at or _utc()}\n"
+            f"CAPTURED_AT: {captured_at or _now()}\n"
             f"PAGE_TITLE: {page_title or '-'}\n"
             f"URL: {req.url}\n"
             f"NOTE: {err}\n"
@@ -1007,7 +1010,7 @@ class SitePipeline(threading.Thread):
                 reproducible_command=repro_cmd,
                 deferred="yes",
                 deferred_reason="429",
-                finished_at=_utc(),
+                finished_at=_now(),
                 result_preview=preview[:200],
             )
             logger.info(
@@ -1022,7 +1025,7 @@ class SitePipeline(threading.Thread):
             err=err,
             repro_cmd=repro_cmd,
             classification="rate_limit",
-            captured_at=_utc(),
+            captured_at=_now(),
         )
 
         # GLOBAL pause: entire site pipeline waits cool_sec (no more traffic while hot).
@@ -1066,13 +1069,13 @@ def reset_session_command_logs(
     for site in ("tmdb", "omdb", "kinopoisk", "letterboxd"):
         names.append(f"{site}_ERROR_COMMANDS.txt")
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    stamp = stamp_local()
     archive_dir = reports_dir / "archive"
     touched: list[Path] = []
     seen: set[str] = set()
     header = (
         f"SESSION LOG (this run only)\n"
-        f"started: {_utc()}\n"
+        f"started: {_now()}\n"
         f"Note: previous content was cleared at session start"
         + (f" (archive under reports/archive/ if non-empty).\n" if archive else ".\n")
         + f"{'=' * 72}\n"
@@ -1127,7 +1130,7 @@ def reset_session_command_logs(
         if not wiki_path.exists():
             wiki_path.write_text(
                 "WIKI_REPORT.txt — single all-in-one Wikipedia report\n"
-                f"started: {_utc()}\n"
+                f"started: {_now()}\n"
                 "Regenerated live during Approach 2 with dashboard + FULL_COMMAND_LINEs.\n"
                 f"{'=' * 72}\n",
                 encoding="utf-8",
@@ -1149,7 +1152,6 @@ class Approach2Executor:
         *,
         site_delays: dict[str, float],
         timeout_sec: float = 20.0,
-        progress_path: str | Path | None = None,
         progress_interval_sec: float = 3.0,
         excel_every: int = 50,
         progress_kwargs: Optional[dict] = None,
@@ -1163,7 +1165,6 @@ class Approach2Executor:
         self.stop_event = threading.Event()
         pk = dict(progress_kwargs or {})
         self.progress = ProgressReporter(
-            progress_path or (store.plan_dir / "pipeline_progress.txt"),
             store,
             site_delays=site_delays,
             interval_sec=progress_interval_sec,

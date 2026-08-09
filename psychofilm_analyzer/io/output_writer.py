@@ -10,6 +10,7 @@ from typing import Iterable
 import pandas as pd
 
 from psychofilm_analyzer.models import EnrichedResult
+from psychofilm_analyzer.utils.localtime import now_str, stamp_local
 
 # Preferred Excel column order: import provenance first, then enrichment
 EXCEL_COLUMN_ORDER = [
@@ -102,7 +103,7 @@ def write_outputs(
     output_dir.mkdir(parents=True, exist_ok=True)
     results = list(results)
     results_sorted = sorted(results, key=lambda r: r.psycho_score, reverse=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    stamp = stamp_local()
     written: dict[str, Path] = {}
 
     if excel:
@@ -188,7 +189,7 @@ def write_outputs(
     if json_out:
         path = output_dir / f"{prefix}_{stamp}.json"
         payload = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": now_str(),
             "count": len(results_sorted),
             "results": [r.to_json_dict() for r in results_sorted],
         }
@@ -203,7 +204,7 @@ def write_outputs(
         lines = [
             "# PsychoFilm Analyzer — Top titles",
             "",
-            f"Generated: {datetime.now(timezone.utc).isoformat()}",
+            f"Generated: {now_str()}",
             f"Threshold: score ≥ {markdown_min_score} (showing up to {markdown_top_n})",
             "",
         ]

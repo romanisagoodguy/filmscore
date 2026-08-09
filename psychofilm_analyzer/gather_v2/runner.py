@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from psychofilm_analyzer.utils.localtime import now_str, stamp_local
 from psychofilm_analyzer.enrichment.export import write_profile_dicts
 from psychofilm_analyzer.gather_v2.assemble import assemble_profiles
 from psychofilm_analyzer.gather_v2.executor import Approach2Executor
@@ -300,9 +300,9 @@ def run_gather_v2(
 
     delays = _default_site_delays(config)
     timeout = float((config.get("http") or {}).get("timeout_sec", 20))
-    progress_path = Path(a2.get("progress_txt") or (plan_dir / "pipeline_progress.txt"))
     excel_every = int(a2.get("excel_every", 40))
     progress_interval = float(a2.get("progress_interval_sec", 3.0))
+    progress_detail_interval = float(a2.get("progress_detail_interval_sec", 30.0))
 
     print("\nApproach 2: starting independent pipelines")
     for s, d in sorted(delays.items()):
@@ -310,15 +310,14 @@ def run_gather_v2(
             print(f"  pipeline {s}: delay={d}s")
     print(f"  unified report → {reports_dir / 'UNIFIED_REPORT.txt'}")
     print(f"  per-pipeline   → {reports_dir / 'pipeline_*.txt'}")
-    print(f"  progress alias → {progress_path}")
 
     dbg_path = None
     if request_debug:
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        ts = stamp_local()
         dbg_path = plan_dir / f"request_debug_a2_{ts}.txt"
         dbg_path.write_text(
             "Approach 2 request debug (plan-level)\n"
-            f"started: {datetime.now(timezone.utc).isoformat()}\n"
+            f"started: {now_str()}\n"
             f"plan: {store.jsonl_path}\n"
             f"inherited_a1: {a1_done}\n"
             f"pending_a2: {len(work_items)}\n"
@@ -349,7 +348,6 @@ def run_gather_v2(
         store,
         site_delays=delays,
         timeout_sec=timeout,
-        progress_path=progress_path,
         progress_interval_sec=progress_interval,
         excel_every=excel_every,
         progress_kwargs={
@@ -358,6 +356,7 @@ def run_gather_v2(
             "approach1_done": a1_done,
             "approach2_film_total": len(work_items) or a2_film_total,
             "inherit_from_a1": inherit,
+            "detail_interval_sec": progress_detail_interval,
         },
         adaptive_sites={"wikipedia": wiki_adapt},
     )
@@ -466,7 +465,6 @@ def run_gather_v2(
         "plan_dir": str(plan_dir),
         "plan_excel": str(store.excel_path),
         "plan_jsonl": str(store.jsonl_path),
-        "progress_txt": str(progress_path),
         "reports_dir": str(reports_dir),
         "unified_report": str(reports_dir / "UNIFIED_REPORT.txt"),
         "inherited_report": str(reports_dir / "INHERITED_FROM_APPROACH1.txt"),
@@ -507,7 +505,7 @@ def _write_idle_report(
     text = "\n".join(
         [
             "PsychoFilm UNIFIED REPORT — Approach 2",
-            f"updated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            f"updated: {now_str()}",
             "",
             "ENTIRE GATHERING PROCESS",
             f"  approach1_checkpoint: {a1_ckpt}",
@@ -537,7 +535,7 @@ def _write_plan_only_report(
         by_site[r.site] = by_site.get(r.site, 0) + 1
     lines = [
         "PsychoFilm UNIFIED REPORT — Approach 2 (PLAN ONLY)",
-        f"updated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"updated: {now_str()}",
         "",
         "ENTIRE GATHERING PROCESS",
         f"  catalog_total: {catalog_total}",

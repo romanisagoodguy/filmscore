@@ -15,10 +15,10 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from psychofilm_analyzer.utils.localtime import now_str
 from psychofilm_analyzer.gather_v2.adaptive_rpm import AdaptiveRpmController
 from psychofilm_analyzer.gather_v2.executor import SitePipeline
 from psychofilm_analyzer.gather_v2.models import (
@@ -38,8 +38,8 @@ from psychofilm_analyzer.gather_v2.wiki_report import write_wikipedia_pipeline_r
 logger = logging.getLogger(__name__)
 
 
-def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "Z"
+def _now() -> str:
+    return now_str(with_ms=True)
 
 
 def reopen_wikipedia_problems(
@@ -75,7 +75,7 @@ def reopen_wikipedia_problems(
             status=STATUS_PENDING,
             deferred="",
             deferred_reason="",
-            error=f"reopened for post-cool recheck (was {prev}/{prev_cls}) at {_utc()}",
+            error=f"reopened for post-cool recheck (was {prev}/{prev_cls}) at {_now()}",
             # keep reproducible_command / result_path as audit trail until overwritten
             started_at="",
             finished_at="",
@@ -86,7 +86,7 @@ def reopen_wikipedia_problems(
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         lines = [
-            f"WIKI RECHECK reopen @ {_utc()}",
+            f"WIKI RECHECK reopen @ {_now()}",
             f"reopened={len(reopened)}",
             *[f"  {rid}" for rid in reopened[:500]],
             "" if len(reopened) <= 500 else f"  ... +{len(reopened) - 500} more",
@@ -104,7 +104,7 @@ def run_wikipedia_loop(
     *,
     config: dict[str, Any],
     reports_dir: str | Path,
-    progress_path: str | Path | None = None,
+
     delay_sec: Optional[float] = None,
 ) -> dict[str, Any]:
     """
@@ -117,7 +117,6 @@ def run_wikipedia_loop(
     timeout = float((config.get("http") or {}).get("timeout_sec", 20))
     reports_dir = Path(reports_dir)
     reports_dir.mkdir(parents=True, exist_ok=True)
-    progress_path = Path(progress_path or (store.plan_dir / "pipeline_progress_wiki_recheck.txt"))
 
     wiki_adapt = dict(a2.get("wikipedia_adaptive_rpm") or {})
     wiki_adapt.setdefault("cool_base_sec", 30.0)
@@ -133,7 +132,6 @@ def run_wikipedia_loop(
 
     stop = threading.Event()
     progress = ProgressReporter(
-        progress_path,
         store,
         site_delays={"wikipedia": d},
         interval_sec=3.0,
@@ -179,7 +177,7 @@ def run_wikipedia_loop(
         error_commands_path=None,
     )
 
-    print(f"Wikipedia recheck loop starting @ {_utc()}")
+    print(f"Wikipedia recheck loop starting @ {_now()}")
     print(f"  delay={d}s  adaptive_rpm={wiki_adapt['initial_rpm']:.2f}")
     print(f"  open wiki work: {sum(store.counts_by_status('wikipedia').get(s, 0) for s in OPEN_WORK)}")
     print(f"  full report → {reports_dir / 'WIKI_REPORT.txt'}")
@@ -207,7 +205,7 @@ def run_wikipedia_loop(
     counts = store.counts_by_status("wikipedia")
     summary = {
         "phase": "wiki_recheck",
-        "finished_at": _utc(),
+        "finished_at": _now(),
         "wikipedia_status": counts,
         "success": counts.get(STATUS_SUCCESS, 0),
         "pending": counts.get(STATUS_PENDING, 0),
@@ -241,7 +239,7 @@ def wait_and_recheck_wikipedia(
 
     msg = (
         f"\n{'='*72}\n"
-        f"WIKI COOL-DOWN WAIT starting {_utc()}  duration={wait_sec:.0f}s "
+        f"WIKI COOL-DOWN WAIT starting {_now()}  duration={wait_sec:.0f}s "
         f"({wait_sec/3600.0:.2f} h)\n"
         f"{'='*72}\n"
     )
@@ -258,9 +256,9 @@ def wait_and_recheck_wikipedia(
         if left > 60:
             print(f"  wiki cool-down: {left/60.0:.1f} min remaining...")
 
-    print(f"Cool-down finished @ {_utc()} — reopening wiki problems")
+    print(f"Cool-down finished @ {_now()} — reopening wiki problems")
     with log_path.open("a", encoding="utf-8") as fh:
-        fh.write(f"cool-down finished {_utc()}\n")
+        fh.write(f"cool-down finished {_now()}\n")
 
     # Reload plan from disk (in case of external updates)
     store.load()
@@ -283,5 +281,5 @@ def wait_and_recheck_wikipedia(
     result["reopened"] = len(reopened)
     result["wait_sec"] = wait_sec
     with log_path.open("a", encoding="utf-8") as fh:
-        fh.write(f"recheck finished {_utc()} summary={result}\n")
+        fh.write(f"recheck finished {_now()} summary={result}\n")
     return result

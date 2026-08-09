@@ -5,10 +5,10 @@ from __future__ import annotations
 import csv
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from psychofilm_analyzer.utils.localtime import now_str
 from psychofilm_analyzer.models import InputTitle
 from psychofilm_analyzer.pipeline import Pipeline
 
@@ -310,7 +310,7 @@ def materialize_inherited_a1(
                         if items
                         else 0,
                     },
-                    {"metric": "written_at", "value": datetime.now(timezone.utc).isoformat()},
+                    {"metric": "written_at", "value": now_str()},
                 ]
             )
             summary.to_excel(writer, sheet_name="summary", index=False)
@@ -354,7 +354,7 @@ def materialize_inherited_a1(
         )
     lines = [
         "INHERITED FROM APPROACH 1",
-        f"written: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"written: {now_str()}",
         f"source_checkpoint: {a1_checkpoint_path}",
         "",
         "COUNTS",

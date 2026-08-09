@@ -23,7 +23,6 @@ import argparse
 import json
 import sys
 import traceback
-from datetime import datetime, timezone
 from pathlib import Path
 
 # project root on path
@@ -31,9 +30,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from psychofilm_analyzer.utils.localtime import now_str
 
-def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+def _now() -> str:
+    return now_str()
 
 
 def main() -> int:
@@ -94,7 +95,7 @@ def main() -> int:
     wait_sec = max(0.0, float(args.wait_hours) * 3600.0)
 
     def log(msg: str) -> None:
-        line = f"[{_utc()}] {msg}"
+        line = f"[{_now()}] {msg}"
         print(line, flush=True)
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
@@ -160,7 +161,7 @@ def main() -> int:
         final=True,
     )
     final = {
-        "finished_at": _utc(),
+        "finished_at": _now(),
         "gather": gather_summary,
         "wiki_recheck": recheck,
         "wikipedia_final": store.counts_by_status("wikipedia"),

@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from psychofilm_analyzer.utils.localtime import now_str, stamp_local
 
 
 def _exists_note(path: Path | str | None) -> str:
@@ -39,7 +40,7 @@ def build_gather_plan(
     out = Path(output_dir)
     plan = {
         "mode": "gather",
-        "confirmed_at": datetime.now(timezone.utc).isoformat(),
+        "confirmed_at": now_str(),
         "source": {
             "film_list": str(source_file) if source_file else "(eval-set / --title CLI)",
             "sheet": source_sheet,
@@ -81,7 +82,7 @@ def build_score_v3_plan(
     inp = Path(score_input)
     plan = {
         "mode": "score-v3",
-        "confirmed_at": datetime.now(timezone.utc).isoformat(),
+        "confirmed_at": now_str(),
         "input": {
             "path": str(inp),
             "kind": "jsonl_checkpoint" if inp.suffix.lower() == ".jsonl" else "profile_json",

@@ -24,13 +24,14 @@ Error handling policy:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 from urllib.parse import quote
 
+from psychofilm_analyzer.utils.localtime import now_str
 
-def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "Z"
+
+def _now() -> str:
+    return now_str(with_ms=True)
 
 
 # Classifications (stable codes used in reports / deferred_reason)
@@ -240,8 +241,11 @@ def resolve_wikipedia(
     year: Optional[int] = None,
     is_tv: bool = False,
     headers: Optional[dict[str, str]] = None,
-    timeout: float = 20.0,
+    timeout: float = 15.0,
     throttle: Optional[Callable[[], None]] = None,
+    # Prefer plan-row spacing outside resolve; inside use micro_gap only.
+    inter_http_gap_sec: float = 0.08,
+    max_direct_titles: int = 2,
     max_search_hits: int = 3,
     # 429 is TRANSIENT. Retry same URL until durable status (404/200/5xx) so
     # reported CAPTURED_HTTP matches independent retest after cool-down.
@@ -282,11 +286,24 @@ def resolve_wikipedia(
     attempts: list[WikiAttempt] = []
     step = 0
     cool_next = float(cool_base_sec)
+    _http_n = 0
 
     def do_get(url: str, params: Optional[dict] = None) -> tuple[Optional[int], str, Any, float, Optional[str]]:
-        """Returns status, body_text, data, ms, exception_name."""
+        """Returns status, body_text, data, ms, exception_name.
+
+        Adaptive RPM should run *once per plan row* (caller). Between title/search
+        attempts we only apply a small inter_http_gap so multi-step resolves are
+        not charged full DELAY_SEC per GET.
+        """
+        nonlocal _http_n
         if throttle:
             throttle()
+        elif _http_n > 0 and inter_http_gap_sec > 0:
+            if stop_event is not None and hasattr(stop_event, "wait"):
+                stop_event.wait(inter_http_gap_sec)
+            else:
+                _time.sleep(inter_http_gap_sec)
+        _http_n += 1
         mono0 = _time.monotonic()
         try:
             resp = session.get(url, params=params or None, headers=hdrs, timeout=timeout)
@@ -350,7 +367,7 @@ def resolve_wikipedia(
             params=dict(params or {}),
             headers=dict(hdrs),
             reproducible_command=cmd,
-            captured_at=_utc(),
+            captured_at=_now(),
             http_status=status,
             body_preview=(body or "")[:400],
             classification=cls,
@@ -454,7 +471,7 @@ def resolve_wikipedia(
             message=message or att.note,
         )
 
-    # --- Phase 1: direct summary candidates ---
+    # --- Phase 1: direct summary candidates (bulk: bare + (film) only) ---
     titles = candidate_titles(
         english_title=english_title,
         film_title=film_title,
@@ -462,6 +479,9 @@ def resolve_wikipedia(
         lang=lang,
         is_tv=is_tv,
     )
+    # Cap direct tries so we reach MediaWiki search faster on hard titles
+    if max_direct_titles > 0:
+        titles = titles[: max(1, int(max_direct_titles))]
     for title in titles:
         url = _summary_url(lang, title)
         att, data = request_durable(

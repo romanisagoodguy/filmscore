@@ -15,14 +15,16 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlencode, urlsplit
 
+from psychofilm_analyzer.utils.localtime import now_str
+
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "Z"
+    """Local system time (name kept for callers; not UTC)."""
+    return now_str(with_ms=True)
 
 
 def _site_bucket(host: str) -> str:

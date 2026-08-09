@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from psychofilm_analyzer.utils.localtime import now_str
 from psychofilm_analyzer.gather_v2.models import (
     STATUS_DEFERRED,
     STATUS_FAILED,
@@ -32,8 +32,8 @@ WIKI_REPORT_NAME = "WIKI_REPORT.txt"
 WIKI_REPORT_ALIAS = "pipeline_wikipedia.txt"
 
 
-def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+def _now() -> str:
+    return now_str()
 
 
 def _pct(n: int, d: int) -> float:
@@ -143,6 +143,76 @@ def _attr_from_row(store: PlanStore, r) -> dict[str, Any]:
     }
 
 
+def load_adaptive_rpm_live(reports_dir: str | Path) -> dict[str, Any]:
+    """
+    Read CURRENT_RPM_wikipedia.txt written by AdaptiveRpmController.
+    Used so WIKI_REPORT always shows RPM even if the progress-thread
+    snapshot was empty / stale / written offline.
+    """
+    p = Path(reports_dir) / "CURRENT_RPM_wikipedia.txt"
+    if not p.exists():
+        # also try adaptive log header lines
+        return {}
+    out: dict[str, Any] = {"source": str(p)}
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip()
+            key = k.lower()
+            if key in {
+                "current_rpm",
+                "stable_rpm",
+                "peak_rpm",
+                "delay_sec",
+                "min_rpm",
+                "max_rpm",
+                "step_rpm",
+                "next_cool_sec",
+                "last_cool_sec",
+                "total_ok",
+                "total_429",
+            }:
+                try:
+                    out[key if key != "current_rpm" else "rpm"] = float(v)
+                    if key == "current_rpm":
+                        out["current_rpm"] = float(v)
+                    elif key == "total_ok":
+                        out["total_success"] = int(float(v))
+                    elif key == "total_429":
+                        out["total_429"] = int(float(v))
+                    elif key == "next_cool_sec":
+                        out["next_cool_pause_sec"] = float(v)
+                    elif key == "last_cool_sec":
+                        out["last_cool_pause_sec"] = float(v)
+                    else:
+                        out[key] = float(v)
+                except ValueError:
+                    out[key] = v
+            elif key == "success_streak":
+                # format 2/8
+                if "/" in v:
+                    a, b = v.split("/", 1)
+                    try:
+                        out["success_streak"] = int(a)
+                        out["success_batch"] = int(b)
+                    except ValueError:
+                        out["success_streak"] = v
+                else:
+                    out["success_streak"] = v
+            elif key == "banner":
+                out["banner"] = v
+            elif key == "updated":
+                out["live_file_updated"] = v
+            else:
+                out[key] = v
+    except OSError:
+        return {}
+    return out
+
+
 def write_wikipedia_pipeline_report(
     store: PlanStore,
     path: str | Path | None = None,
@@ -150,6 +220,8 @@ def write_wikipedia_pipeline_report(
     adaptive: Optional[dict[str, Any]] = None,
     final: bool = False,
     reports_dir: str | Path | None = None,
+    max_full_detail: int = 40,
+    max_event_log: int = 40,
 ) -> Path:
     """
     Write the ONE Wikipedia text report with all information.
@@ -165,6 +237,7 @@ def write_wikipedia_pipeline_report(
     if path.name == WIKI_REPORT_ALIAS:
         path = path.parent / WIKI_REPORT_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
+    reports_base = path.parent
 
     rows = store.by_site("wikipedia")
     counts = Counter(r.status for r in rows)
@@ -200,7 +273,16 @@ def write_wikipedia_pipeline_report(
     n404 = http.get("404", 0)
     n200 = http.get("200", 0)
 
-    adapt = adaptive or {}
+    # Prefer in-memory controller snapshot; always merge live file as fallback
+    adapt = dict(adaptive or {})
+    live = load_adaptive_rpm_live(reports_base)
+    if live:
+        # live file fills missing keys; snapshot values win when present & non-empty
+        merged = dict(live)
+        for k, v in adapt.items():
+            if v is not None and v != "":
+                merged[k] = v
+        adapt = merged
     health = "OK"
     if n429 > max(success, 1) * 2 and success < 5:
         health = "BAD — many rate_limit (429) captures"
@@ -231,7 +313,7 @@ def write_wikipedia_pipeline_report(
     lines: list[str] = [
         "================================================================================",
         "  WIKI_REPORT.txt  —  SINGLE ALL-IN-ONE WIKIPEDIA REPORT (Approach 2)",
-        f"  updated: {_utc()}   mode: {'FINAL' if final else 'LIVE'}",
+        f"  updated: {_now()}   mode: {'FINAL' if final else 'LIVE'}",
         f"  path: {path}",
         "================================================================================",
         "",
@@ -262,7 +344,9 @@ def write_wikipedia_pipeline_report(
         f"  Classes:    {dict(by_class) if by_class else '{}'}",
         "",
     ]
-    if adapt:
+    has_rpm = adapt.get("current_rpm") is not None or adapt.get("rpm") is not None
+    if has_rpm:
+        src = adapt.get("source") or "controller_snapshot"
         lines += [
             "  Adaptive RPM (live)",
             f"    CURRENT_RPM = {adapt.get('current_rpm', adapt.get('rpm'))}",
@@ -276,6 +360,12 @@ def write_wikipedia_pipeline_report(
             f"ok={adapt.get('total_success')}  429={adapt.get('total_429')}  "
             f"cool_next={adapt.get('next_cool_pause_sec')}s",
             f"    banner: {adapt.get('banner') or '-'}",
+            f"    source: {src}"
+            + (
+                f"  file_updated={adapt.get('live_file_updated')}"
+                if adapt.get("live_file_updated")
+                else ""
+            ),
             f"    live:   CURRENT_RPM_wikipedia.txt",
             f"    detail: adaptive_rpm_wikipedia.txt",
             "",
@@ -287,7 +377,9 @@ def write_wikipedia_pipeline_report(
         ]
     else:
         lines += [
-            "  Adaptive RPM: (not active this session — no controller snapshot)",
+            "  Adaptive RPM: no CURRENT_RPM yet",
+            "    (controller writes reports/CURRENT_RPM_wikipedia.txt once wiki pipeline starts;",
+            "     open that file for live RPM; this section fills on next DETAIL refresh)",
             "",
         ]
 
@@ -319,10 +411,11 @@ def write_wikipedia_pipeline_report(
         n = sum(c.values())
         lines.append(f"  {ep:14s}  n={n:4d}   {parts}")
 
+    ev_cap = max(10, int(max_event_log))
     lines += [
         "",
         "--------------------------------------------------------------------------------",
-        "5) EVENT LOG  (all finished, newest first — compact)",
+        f"5) EVENT LOG  (newest first, last {ev_cap} — compact)",
         "--------------------------------------------------------------------------------",
         f"  {'WHEN':22s}  {'STAT':8s}  {'HTTP':4s}  {'CLASS':14s}  {'ENDP':12s}  FILM",
         "  " + "-" * 78,
@@ -330,7 +423,7 @@ def write_wikipedia_pipeline_report(
     if not finished_recent:
         lines.append("  (no finished wiki requests yet)")
     else:
-        for r in finished_recent:
+        for r in finished_recent[:ev_cap]:
             a = _attr_from_row(store, r)
             when = str(a.get("captured_at") or r.finished_at or "-")[:22]
             film = f"{r.film_title} ({r.year})"
@@ -341,20 +434,40 @@ def write_wikipedia_pipeline_report(
                 f"{str(a.get('classification') or '-'):14s}  "
                 f"{(r.endpoint_type or '-'):12s}  {film}"
             )
+        if len(finished_recent) > ev_cap:
+            lines.append(f"  ... +{len(finished_recent) - ev_cap} more finished (see responses/)")
+
+    # Cap full dumps so DETAIL refresh does not take 2+ minutes and stall pipelines
+    detail_cap = max(10, int(max_full_detail))
+    # Prefer newest problems + newest overall
+    problems = [
+        r
+        for r in finished_recent
+        if r.status in (STATUS_FAILED, STATUS_SKIPPED, STATUS_DEFERRED, STATUS_RETRY)
+    ]
+    detail_rows = problems[: detail_cap // 2]
+    seen_ids = {r.request_id for r in detail_rows}
+    for r in finished_recent:
+        if len(detail_rows) >= detail_cap:
+            break
+        if r.request_id not in seen_ids:
+            detail_rows.append(r)
+            seen_ids.add(r.request_id)
 
     lines += [
         "",
         "--------------------------------------------------------------------------------",
-        f"6) FULL DETAIL + FULL_COMMAND_LINE  ({len(finished_chrono)} finished requests)",
+        f"6) FULL DETAIL + FULL_COMMAND_LINE  "
+        f"(showing {len(detail_rows)} of {len(finished_chrono)} finished; newest/problems first)",
         "--------------------------------------------------------------------------------",
-        "  Every finished wiki request is listed below (oldest → newest).",
+        "  Cap keeps DETAIL report fast. Full bodies always in responses/<request_id>.json.",
         "  Paste FULL_COMMAND_LINE into PowerShell to retest independently.",
         "",
     ]
-    if not finished_chrono:
+    if not detail_rows:
         lines.append("  (none yet)")
     else:
-        for i, r in enumerate(finished_chrono, 1):
+        for i, r in enumerate(detail_rows, 1):
             a = _attr_from_row(store, r)
             cmd = _cmd_for_row(store, r)
             attempts = _load_attempts(store, r)
@@ -433,7 +546,7 @@ def write_wikipedia_pipeline_report(
         "",
         "================================================================================",
         f"  END WIKI_REPORT  |  total_rows={total}  finished={len(finished_chrono)}  "
-        f"open={len(still_open)}  |  {_utc()}",
+        f"open={len(still_open)}  |  {_now()}",
         "================================================================================",
         "",
     ]

@@ -10,6 +10,7 @@ from typing import Iterable
 import pandas as pd
 
 from psychofilm_analyzer.enrichment.profile import EnrichmentProfile
+from psychofilm_analyzer.utils.localtime import now_str, stamp_local
 
 PROFILE_COLUMN_ORDER = [
     "rank",
@@ -203,7 +204,7 @@ def write_profile_dicts(
     """Write gather outputs from profile JSON dicts (checkpoint / full catalog)."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    stamp = stamp_local()
     written: dict[str, Path] = {}
 
     rows = [profile_dict_to_flat(d) for d in profile_dicts]
@@ -279,7 +280,7 @@ def write_profile_dicts(
 
     js = output_dir / f"{prefix}_{stamp}.json"
     payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": now_str(),
         "mode": "gather_only",
         "count": len(profile_dicts),
         "note": "No psych scores or clusters. Review evidence bags before scoring.",
@@ -532,7 +533,7 @@ def bootstrap_live_exports_from_checkpoint(
         tf.write(
             f"PsychoFilm gather live report\n"
             f"profiles: {len(dicts)}\n"
-            f"generated: {datetime.now(timezone.utc).isoformat()}\n\n"
+            f"generated: {now_str()}\n\n"
         )
         for i, d in enumerate(dicts, start=1):
             tf.write(format_profile_text(d, index=i))

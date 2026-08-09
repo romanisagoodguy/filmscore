@@ -79,7 +79,7 @@ gather:
 # Approach 2 only (Request Plan + independent pipelines)
 gather_v2:
   plan_dir: output/gather_v2
-  progress_txt: output/gather_v2/pipeline_progress.txt
+  # Overall progress: reports_dir/UNIFIED_REPORT.txt (only; no pipeline_progress.txt alias)
   reports_dir: output/gather_v2/reports
   checkpoint_jsonl: output/gather_v2/gather_v2_checkpoint.jsonl
   # Inherit Approach 1 gather_checkpoint.jsonl (skip already-fetched films)
@@ -101,7 +101,8 @@ gather_v2:
     increase_pct: 0.0          # unused when step_rpm > 0
     success_batch: 8           # N OK at current rate → lock stable, then +step
     rate_limit_max_attempts: 50  # 429 keeps request deferred, not hard-fail early
-  progress_interval_sec: 3
+  progress_interval_sec: 3          # FAST: UNIFIED_REPORT only
+  progress_detail_interval_sec: 30  # DETAIL: pipeline_*.txt + WIKI_REPORT
   excel_every: 40
   # Write profile_a2_*.xlsx / profile_a2_live.xlsx during gather (seconds)
   profile_snapshot_interval_sec: 1200   # 20 minutes

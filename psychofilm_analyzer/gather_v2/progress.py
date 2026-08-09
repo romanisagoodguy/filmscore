@@ -1,14 +1,21 @@
-"""Unified + per-pipeline progress reports for Approach 2."""
+"""Unified + per-pipeline progress reports for Approach 2.
+
+Performance model:
+  - FAST tick (default 3s): light UNIFIED_REPORT only (counts + adaptive RPM)
+  - DETAIL tick (default 30s): full pipeline_*.txt + WIKI_REPORT (heavy)
+  Never block the fast path on multi-MB wiki dumps.
+"""
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import Counter, defaultdict, deque
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from psychofilm_analyzer.utils.localtime import now_str
 from psychofilm_analyzer.gather_v2.models import (
     STATUS_DEFERRED,
     STATUS_FAILED,
@@ -21,9 +28,12 @@ from psychofilm_analyzer.gather_v2.models import (
 )
 from psychofilm_analyzer.gather_v2.plan_store import PlanStore
 
+logger = logging.getLogger(__name__)
 
-def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+def _now() -> str:
+    """Local system time for reports."""
+    return now_str()
 
 
 def _pct(done: int, total: int) -> float:
@@ -50,17 +60,18 @@ def _fmt_eta(sec: Optional[float]) -> str:
 class ProgressReporter:
     """
     Writes:
-      - unified report (all pipelines + overall gather progress)
-      - one detailed report file per pipeline (errors, endpoints, samples)
+      - reports/UNIFIED_REPORT.txt every few seconds (light dashboard)
+      - pipeline_*.txt + WIKI_REPORT.txt on a slower detail cadence
     """
 
     def __init__(
         self,
-        path: str | Path,
         store: PlanStore,
         *,
         site_delays: Optional[dict[str, float]] = None,
         interval_sec: float = 3.0,
+        detail_interval_sec: float = 30.0,
+        film_progress_interval_sec: float = 20.0,
         reports_dir: Optional[str | Path] = None,
         # Overall catalog progress (Approach 1 + 2)
         catalog_total: int = 0,
@@ -68,15 +79,14 @@ class ProgressReporter:
         approach2_film_total: int = 0,
         inherit_from_a1: bool = True,
     ):
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         self.store = store
         self.site_delays = site_delays or {}
-        self.interval_sec = interval_sec
-        self.reports_dir = Path(reports_dir or (self.path.parent / "reports"))
+        self.interval_sec = max(1.0, float(interval_sec))
+        self.detail_interval_sec = max(self.interval_sec, float(detail_interval_sec))
+        self.film_progress_interval_sec = max(5.0, float(film_progress_interval_sec))
+        self.reports_dir = Path(reports_dir or (store.plan_dir / "reports"))
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         self.unified_path = self.reports_dir / "UNIFIED_REPORT.txt"
-        # also keep alias at progress path
         self.catalog_total = int(catalog_total or 0)
         self.approach1_done = int(approach1_done or 0)
         self.approach2_film_total = int(approach2_film_total or 0)
@@ -84,10 +94,19 @@ class ProgressReporter:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._completions: dict[str, deque[float]] = defaultdict(deque)
+        self._last_activity: dict[str, str] = {}
+        self._last_request_id: dict[str, str] = {}
         self._lock = threading.Lock()
         self._started = time.monotonic()
-        self._session_start_utc = _utc()
+        self._session_start = _now()
         self._adaptive: dict[str, dict[str, Any]] = {}
+        self._last_detail_mono = 0.0
+        self._last_film_prog_mono = 0.0
+        self._cached_film_prog: Optional[dict[str, Any]] = None
+        self._last_write_ms: float = 0.0
+        self._last_detail_ms: float = 0.0
+        self._last_error: str = ""
+        self._detail_tick_n: int = 0
         self._write_bootstrap()
 
     def set_adaptive_snapshot(self, site: str, snap: dict[str, Any]) -> None:
@@ -97,10 +116,10 @@ class ProgressReporter:
     def _write_bootstrap(self) -> None:
         note = (
             "PsychoFilm Approach 2 — reports\n"
-            f"session_started: {self._session_start_utc}\n"
-            f"unified: {self.unified_path}\n"
-            f"per_pipeline: {self.reports_dir}/pipeline_<site>.txt\n"
-            f"live_alias: {self.path}\n"
+            f"session_started: {self._session_start}\n"
+            f"unified: {self.unified_path}  (FAST every {self.interval_sec:.0f}s)\n"
+            f"detail:  {self.reports_dir}/pipeline_*.txt + WIKI_REPORT.txt  "
+            f"(every {self.detail_interval_sec:.0f}s)\n"
             f"plan: {self.store.jsonl_path}\n"
             f"excel: {self.store.excel_path}\n"
             f"inherit_approach1: {self.inherit_from_a1}\n"
@@ -110,16 +129,18 @@ class ProgressReporter:
             "=" * 72
             + "\n"
         )
-        self.path.write_text(note, encoding="utf-8")
         self.unified_path.write_text(note, encoding="utf-8")
 
-    def note_completion(self, site: str) -> None:
+    def note_completion(self, site: str, request_id: str = "") -> None:
         with self._lock:
             now = time.monotonic()
             q = self._completions[site]
             q.append(now)
             while q and now - q[0] > 60.0:
                 q.popleft()
+            self._last_activity[site] = _now()
+            if request_id:
+                self._last_request_id[site] = request_id
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._loop, name="a2-progress", daemon=True)
@@ -128,21 +149,26 @@ class ProgressReporter:
     def stop(self) -> None:
         self._stop.set()
         if self._thread:
-            self._thread.join(timeout=5)
-        self.write_once(final=True)
+            self._thread.join(timeout=max(10.0, self.detail_interval_sec + 5))
+        try:
+            self.write_once(final=True, force_detail=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("final progress write failed: %s", exc)
 
     def _loop(self) -> None:
         while not self._stop.wait(self.interval_sec):
             try:
-                self.write_once(final=False)
-            except Exception:
-                pass
+                self.write_once(final=False, force_detail=False)
+            except Exception as exc:  # noqa: BLE001
+                self._last_error = f"{type(exc).__name__}: {exc}"
+                logger.exception("progress write_once failed: %s", exc)
 
-    def _stats_for_site(self, site: str) -> PipelineStats:
-        counts = self.store.counts_by_status(site)
+    def _stats_from_counts(self, site: str, counts: dict[str, int]) -> PipelineStats:
         total = sum(counts.values())
         with self._lock:
             rpm = float(len(self._completions.get(site, ())))
+            last = self._last_activity.get(site, "")
+            last_id = self._last_request_id.get(site, "")
         pending = (
             counts.get(STATUS_PENDING, 0)
             + counts.get(STATUS_RETRY, 0)
@@ -153,16 +179,7 @@ class ProgressReporter:
             + counts.get(STATUS_FAILED, 0)
             + counts.get(STATUS_SKIPPED, 0)
         )
-        eta = None
-        if rpm > 0 and pending > 0:
-            eta = (pending / rpm) * 60.0
-        last = ""
-        last_id = ""
-        for req in reversed(self.store.by_site(site)):
-            if req.finished_at or req.started_at:
-                last = req.finished_at or req.started_at
-                last_id = req.request_id
-                break
+        eta = (pending / rpm) * 60.0 if rpm > 0 and pending > 0 else None
         return PipelineStats(
             site=site,
             pending=counts.get(STATUS_PENDING, 0),
@@ -180,36 +197,48 @@ class ProgressReporter:
             delay_sec=float(self.site_delays.get(site, 0.0)),
         )
 
-    def _overall_gather_progress(self) -> dict[str, Any]:
-        """Catalog-level progress: A1 done + A2 film completion estimate from requests."""
-        # Estimate A2 films completed: film_index where all requests terminal
-        by_film: dict[int, list] = defaultdict(list)
+    def _stats_for_site(self, site: str, *, light: bool = True) -> PipelineStats:
+        counts = self.store.counts_by_status(site)
+        st = self._stats_from_counts(site, counts)
+        if not light and (not st.last_activity or not st.last_request_id):
+            last, last_id = st.last_activity, st.last_request_id
+            for req in reversed(self.store.by_site(site)):
+                if req.finished_at or req.started_at:
+                    last = req.finished_at or req.started_at or last
+                    last_id = req.request_id or last_id
+                    break
+            st.last_activity = last
+            st.last_request_id = last_id
+        return st
+
+    def _overall_gather_progress(self, *, force: bool = False) -> dict[str, Any]:
+        """Catalog-level progress; cached so 50k scans do not block every 3s tick."""
+        now = time.monotonic()
+        if (
+            not force
+            and self._cached_film_prog is not None
+            and (now - self._last_film_prog_mono) < self.film_progress_interval_sec
+        ):
+            return dict(self._cached_film_prog)
+
+        by_film: dict[int, set[str]] = defaultdict(set)
         for req in self.store.all():
-            by_film[int(req.film_index)].append(req)
+            by_film[int(req.film_index)].add(req.status)
+
+        terminal = {STATUS_SUCCESS, STATUS_FAILED, STATUS_SKIPPED}
         a2_films_done = 0
         a2_films_partial = 0
-        for fi, reqs in by_film.items():
-            statuses = {r.status for r in reqs}
-            if statuses <= {STATUS_SUCCESS, STATUS_FAILED, STATUS_SKIPPED}:
+        for statuses in by_film.values():
+            if statuses and statuses <= terminal:
                 a2_films_done += 1
-            elif any(
-                s in statuses
-                for s in (
-                    STATUS_SUCCESS,
-                    STATUS_FAILED,
-                    STATUS_SKIPPED,
-                    STATUS_RUNNING,
-                    STATUS_DEFERRED,
-                    STATUS_RETRY,
-                    STATUS_PENDING,
-                )
-            ):
+            elif statuses:
                 a2_films_partial += 1
+
         a2_total = self.approach2_film_total or len(by_film)
         catalog_done = self.approach1_done + a2_films_done
         catalog_total = self.catalog_total or (self.approach1_done + a2_total)
         remaining = max(0, catalog_total - catalog_done)
-        return {
+        out = {
             "catalog_total": catalog_total,
             "approach1_done": self.approach1_done,
             "approach2_film_total": a2_total,
@@ -221,9 +250,19 @@ class ProgressReporter:
             "catalog_pct": _pct(catalog_done, catalog_total),
             "approach2_pct": _pct(a2_films_done, a2_total),
         }
+        self._cached_film_prog = dict(out)
+        self._last_film_prog_mono = now
+        return out
 
-    def _request_progress(self) -> dict[str, Any]:
-        all_c = self.store.counts_by_status()
+    def _request_progress(
+        self, by_site: Optional[dict[str, dict[str, int]]] = None
+    ) -> dict[str, Any]:
+        if by_site is None:
+            by_site = self.store.counts_by_site_and_status()
+        all_c: dict[str, int] = {}
+        for counts in by_site.values():
+            for st, n in counts.items():
+                all_c[st] = all_c.get(st, 0) + n
         total = sum(all_c.values())
         done = (
             all_c.get(STATUS_SUCCESS, 0)
@@ -362,7 +401,7 @@ class ProgressReporter:
         return lines
 
     def _write_pipeline_report(self, site: str, st: PipelineStats, *, final: bool) -> None:
-        path = self.reports_dir / f"pipeline_{site}.txt"
+        """DETAIL write: full report for every site (wiki + tmdb/omdb/kp/lb)."""
         with self._lock:
             adapt = dict(self._adaptive.get(site) or {})
 
@@ -376,100 +415,87 @@ class ProgressReporter:
             write_wikipedia_pipeline_report(
                 self.store,
                 self.reports_dir / WIKI_REPORT_NAME,
-                adaptive=adapt or None,
+                adaptive=adapt,
                 final=final,
+                reports_dir=self.reports_dir,
             )
             return
 
-        pct = _pct(st.completed, st.total)
-        err_lines = self._site_errors(site)
-        ep_lines = self._endpoint_breakdown(site)
-        site_counts = self.store.counts_by_status(site)
-        # duration stats
-        durs = [float(r.duration_ms) for r in self.store.by_site(site) if r.duration_ms]
-        avg_ms = sum(durs) / len(durs) if durs else 0.0
-        max_ms = max(durs) if durs else 0.0
-        # http status histogram
-        http_c: Counter = Counter()
-        for r in self.store.by_site(site):
-            if r.http_status is not None:
-                http_c[str(r.http_status)] += 1
-            elif r.error:
-                http_c["ERR"] += 1
+        from psychofilm_analyzer.gather_v2.site_report import write_site_pipeline_report
 
-        body = [
-            f"PIPELINE REPORT — {site.upper()}",
-            f"updated: {_utc()}  {'FINAL' if final else 'live'}",
-            f"session_started: {self._session_start_utc}",
-            "",
-            "PROGRESS",
-            f"  { _bar(pct) } {pct}%",
-            f"  completed={st.completed}/{st.total}",
-            f"  pending={st.pending}  running={st.running}  success={st.success}",
-            f"  failed={st.failed}  skipped={st.skipped}  retry={st.retry}  "
-            f"deferred={site_counts.get(STATUS_DEFERRED, 0)}",
-            f"  delay_sec={st.delay_sec}  speed={st.rpm} req/min  ETA={_fmt_eta(st.eta_sec)}",
-            f"  last_activity={st.last_activity or '-'}  last_id={st.last_request_id or '-'}",
-            f"  latency_ms avg={avg_ms:.0f} max={max_ms:.0f} (n={len(durs)})",
-            "",
-        ]
-        if adapt:
-            body += [
-                "ADAPTIVE RPM (live) — CURRENT VALUES",
-                f"  CURRENT_RPM={adapt.get('current_rpm', adapt.get('rpm'))}  "
-                f"STABLE_RPM={adapt.get('stable_rpm')}  "
-                f"PEAK_RPM={adapt.get('peak_rpm')}",
-                f"  DELAY_SEC={adapt.get('delay_sec')}  "
-                f"STEP_RPM={adapt.get('step_rpm')}  "
-                f"BOUNDS=[{adapt.get('min_rpm')}..{adapt.get('max_rpm')}]",
-                f"  last_cool_pause_sec={adapt.get('last_cool_pause_sec')}  "
-                f"next_cool_pause_sec={adapt.get('next_cool_pause_sec')}",
-                f"  success_streak={adapt.get('success_streak')}/{adapt.get('success_batch')}  "
-                f"total_success={adapt.get('total_success')}  total_429={adapt.get('total_429')}",
-                f"  banner: {adapt.get('banner') or '-'}",
-                f"  live_file: {self.reports_dir / f'CURRENT_RPM_{site}.txt'}",
-                f"  detail_log: {self.reports_dir / f'adaptive_rpm_{site}.txt'}",
-                "",
-                "  RULES:",
-                "    - After every success_batch OK: lock STABLE_RPM, then CURRENT_RPM += STEP",
-                "    - Climb stepwise until MAX_RPM (default 200)",
-                "    - On 429: global cool-down + ROLL BACK CURRENT_RPM → STABLE_RPM",
-                "    - If already at stable on 429: step DOWN and lower STABLE_RPM",
-                "",
-            ]
-        body += [
-            "HTTP STATUS BREAKDOWN",
-            f"  {dict(http_c) if http_c else '{}'}",
-            "",
-            "ENDPOINT BREAKDOWN",
-        ]
-        body += ep_lines or ["  (none)"]
-        body += [
-            "",
-            f"ERRORS / PROBLEMS (last {len(err_lines)}, failed+skipped with info)",
-        ]
-        body += err_lines or ["  (none)"]
-        body.append("")
-        body.append("NOTES")
-        body.append("  - status skipped often means dependency failed or alternate path not needed")
-        body.append("  - 429: THIS request is parked (retry later); pipeline continues other requests")
-        body.append("  - 404/other client errors: FAILED permanently; pipeline moves on")
-        body.append("  - wikipedia: single report reports/WIKI_REPORT.txt (all info + commands)")
-        body.append("  - full bodies: responses/<request_id>.json")
-        body.append("  - master plan: request_plan.xlsx / request_plan.jsonl")
-        body.append("")
-        path.write_text("\n".join(body) + "\n", encoding="utf-8")
+        write_site_pipeline_report(
+            self.store,
+            site,
+            self.reports_dir / f"pipeline_{site}.txt",
+            delay_sec=float(self.site_delays.get(site, st.delay_sec or 0.0)),
+            final=final,
+        )
 
-    def write_once(self, *, final: bool = False) -> None:
-        sites = self.store.sites()
-        wall = time.monotonic() - self._started
-        req_p = self._request_progress()
-        cat_p = self._overall_gather_progress()
+    def _write_fast_site_status(self, site: str, st: PipelineStats) -> None:
+        """FAST write: small live status for every site so files are not wiki-only."""
+        from psychofilm_analyzer.gather_v2.site_report import write_light_site_status
+
+        write_light_site_status(
+            self.store,
+            site,
+            self.reports_dir / f"pipeline_{site}_live.txt",
+            delay_sec=float(self.site_delays.get(site, st.delay_sec or 0.0)),
+            last_activity=st.last_activity or "",
+            last_id=st.last_request_id or "",
+            rpm=float(st.rpm or 0.0),
+        )
+
+    def write_once(self, *, final: bool = False, force_detail: bool = False) -> None:
+        """
+        FAST path (every interval_sec): light UNIFIED_REPORT only.
+        DETAIL path (every detail_interval_sec or final): heavy per-site + WIKI_REPORT.
+        """
+        t0 = time.perf_counter()
+        now = time.monotonic()
+        # First real tick after start should still be FAST; detail only on timer
+        # or final. Bootstrap sets _last_detail_mono=0 so treat 0 as "never done".
+        if self._last_detail_mono <= 0:
+            do_detail = bool(final or force_detail)
+        else:
+            do_detail = bool(
+                final
+                or force_detail
+                or (now - self._last_detail_mono) >= self.detail_interval_sec
+            )
+
+        by_site_counts = self.store.counts_by_site_and_status()
+        sites = list(by_site_counts.keys()) or self.store.sites()
+        wall = now - self._started
+        req_p = self._request_progress(by_site_counts)
+        # Film-level full scan is expensive — only on detail/final (then cached)
+        if do_detail or final or self._cached_film_prog is not None:
+            cat_p = self._overall_gather_progress(force=final or do_detail)
+        else:
+            a2_total = self.approach2_film_total or 0
+            cat_total = self.catalog_total or (self.approach1_done + a2_total)
+            cat_p = {
+                "catalog_total": cat_total,
+                "approach1_done": self.approach1_done,
+                "approach2_film_total": a2_total,
+                "approach2_films_done": 0,
+                "approach2_films_partial": 0,
+                "approach2_films_pending": a2_total,
+                "catalog_done": self.approach1_done,
+                "catalog_remaining": max(0, cat_total - self.approach1_done),
+                "catalog_pct": _pct(self.approach1_done, cat_total),
+                "approach2_pct": 0.0,
+            }
 
         lines: list[str] = [
             "PsychoFilm UNIFIED REPORT — Approach 2 gather",
-            f"updated: {_utc()}  wall={wall:.0f}s  {'FINAL' if final else 'live'}",
-            f"session_started: {self._session_start_utc}",
+            f"updated: {_now()}  wall={wall:.0f}s  {'FINAL' if final else 'live'}",
+            f"session_started: {self._session_start}",
+            f"refresh: FAST every {self.interval_sec:.0f}s  |  "
+            f"DETAIL every {self.detail_interval_sec:.0f}s  "
+            f"(this write: {'DETAIL' if do_detail else 'FAST'})",
+            f"last_write_ms={self._last_write_ms:.0f}  "
+            f"last_detail_ms={self._last_detail_ms:.0f}"
+            + (f"  last_error={self._last_error}" if self._last_error else ""),
             f"plan_jsonl: {self.store.jsonl_path}",
             f"plan_excel: {self.store.excel_path}",
             f"reports_dir: {self.reports_dir}",
@@ -496,8 +522,10 @@ class ProgressReporter:
             f"  done={req_p['done']}/{req_p['total']}  "
             f"pending={req_p['pending']} running={req_p['running']}",
             f"  success={req_p['success']} failed={req_p['failed']} "
-            f"skipped={req_p['skipped']} retry={req_p['retry']}",
-            f"  speed={req_p['rpm']} req/min  ETA={_fmt_eta(req_p['eta_sec'])}",
+            f"skipped={req_p['skipped']} retry={req_p['retry']} "
+            f"deferred={req_p.get('deferred', 0)}",
+            f"  observed_finish_rpm={req_p['rpm']} req/min  "
+            f"ETA={_fmt_eta(req_p['eta_sec'])}",
             "",
             "=" * 72,
             "PER-PIPELINE SUMMARY",
@@ -506,22 +534,28 @@ class ProgressReporter:
         ]
 
         for site in sites:
-            st = self._stats_for_site(site)
+            st = self._stats_from_counts(site, by_site_counts.get(site) or {})
             pct = _pct(st.completed, st.total)
             with self._lock:
                 adapt = dict(self._adaptive.get(site) or {})
+            delay = float(self.site_delays.get(site, st.delay_sec or 0.0))
             lines += [
                 f"[{site.upper()}]",
                 f"  {_bar(pct)} {pct}%  completed={st.completed}/{st.total}",
                 f"  pending={st.pending} running={st.running} success={st.success} "
                 f"failed={st.failed} skipped={st.skipped} retry={st.retry}",
-                f"  delay={st.delay_sec}s  rpm={st.rpm}  ETA={_fmt_eta(st.eta_sec)}",
+                f"  delay={delay}s  "
+                f"observed_finish_rpm={st.rpm}  "
+                f"ETA={_fmt_eta(st.eta_sec)}",
                 f"  last={st.last_activity or '-'}  id={st.last_request_id or '-'}",
+                f"  live_status:   {self.reports_dir / f'pipeline_{site}_live.txt'}",
                 f"  detail_report: {self.reports_dir / f'pipeline_{site}.txt'}",
             ]
+            if site == "wikipedia":
+                lines.append(f"  wiki_report:   {self.reports_dir / 'WIKI_REPORT.txt'}")
             if adapt:
                 lines += [
-                    f"  CURRENT_RPM={adapt.get('current_rpm', adapt.get('rpm'))}  "
+                    f"  adaptive_target_rpm={adapt.get('current_rpm', adapt.get('rpm'))}  "
                     f"STABLE_RPM={adapt.get('stable_rpm')}  "
                     f"PEAK_RPM={adapt.get('peak_rpm')}  "
                     f"DELAY_SEC={adapt.get('delay_sec')}  "
@@ -530,27 +564,83 @@ class ProgressReporter:
                     f"  cool_next={adapt.get('next_cool_pause_sec')}s "
                     f"streak={adapt.get('success_streak')}/{adapt.get('success_batch')} "
                     f"ok={adapt.get('total_success')} 429={adapt.get('total_429')}",
+                    "  NOTE: observed_finish_rpm = plan rows finished/min; "
+                    "adaptive_target_rpm = spacing policy (not the same)",
                     f"  live_rpm: {self.reports_dir / f'CURRENT_RPM_{site}.txt'}",
                     f"  adaptive_log: {self.reports_dir / f'adaptive_rpm_{site}.txt'}",
                 ]
             lines.append("")
-            self._write_pipeline_report(site, st, final=final)
+            # FAST: refresh live status for EVERY site (not only wiki)
+            if not do_detail:
+                try:
+                    st2 = PipelineStats(
+                        site=st.site,
+                        pending=st.pending,
+                        running=st.running,
+                        success=st.success,
+                        failed=st.failed,
+                        skipped=st.skipped,
+                        retry=st.retry,
+                        completed=st.completed,
+                        total=st.total,
+                        rpm=st.rpm,
+                        eta_sec=st.eta_sec,
+                        last_activity=st.last_activity,
+                        last_request_id=st.last_request_id,
+                        delay_sec=delay,
+                    )
+                    self._write_fast_site_status(site, st2)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("fast site status %s failed: %s", site, exc)
 
-        # Global top errors
+        # Heavy detail files on slower cadence only (never block FAST path)
+        if do_detail:
+            t_detail = time.perf_counter()
+            self._detail_tick_n += 1
+            for site in sites:
+                st = self._stats_from_counts(site, by_site_counts.get(site) or {})
+                try:
+                    self._write_pipeline_report(site, st, final=final)
+                    # also refresh live status on detail tick
+                    delay = float(self.site_delays.get(site, st.delay_sec or 0.0))
+                    st.delay_sec = delay
+                    self._write_fast_site_status(site, st)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("pipeline report %s failed: %s", site, exc)
+                    self._last_error = f"pipeline_{site}: {type(exc).__name__}: {exc}"
+            # Full plan Excel is expensive; only every 3rd DETAIL tick (or final)
+            if final or (self._detail_tick_n % 3 == 0):
+                try:
+                    self.store.write_excel_and_csv()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("plan excel export on detail tick failed: %s", exc)
+            self._last_detail_mono = time.monotonic()
+            self._last_detail_ms = (time.perf_counter() - t_detail) * 1000.0
+        elif self._last_detail_mono <= 0:
+            # Mark so subsequent FAST ticks stay FAST until detail interval
+            self._last_detail_mono = time.monotonic()
+
+        # Top errors: short on fast path, fuller on detail
         lines += [
             "=" * 72,
             "TOP ERRORS / PROBLEMS (all pipelines, recent)",
             "=" * 72,
         ]
-        all_err = []
-        for site in sites:
-            all_err.extend(self._site_errors(site, limit=15))
-        if all_err:
-            lines.extend(all_err[:50])
+        if do_detail:
+            all_err: list[str] = []
+            for site in sites:
+                all_err.extend(self._site_errors(site, limit=10))
+            if all_err:
+                lines.extend(all_err[:40])
+            else:
+                lines.append("  (none)")
         else:
-            lines.append("  (none)")
+            lines.append(
+                f"  (detail refresh in "
+                f"{max(0.0, self.detail_interval_sec - (now - self._last_detail_mono)):.0f}s "
+                f"— open pipeline_*.txt / WIKI_REPORT.txt for full commands)"
+            )
 
-        # Global CURRENT_RPM banner for wikipedia (and any adaptive site)
         with self._lock:
             adapt_all = {k: dict(v) for k, v in self._adaptive.items()}
         if adapt_all:
@@ -573,17 +663,26 @@ class ProgressReporter:
         lines += [
             "",
             "=" * 72,
-            "FILES",
-            f"  unified:     {self.unified_path}",
-            f"  live_alias:  {self.path}",
-            f"  per_pipeline:{self.reports_dir}/pipeline_*.txt",
-            f"  wiki_report: {self.reports_dir / 'WIKI_REPORT.txt'}",
-            f"  current_rpm: {self.reports_dir / 'CURRENT_RPM_wikipedia.txt'}",
-            f"  plan:        {self.store.excel_path}",
+            "FILES (all pipelines — not wiki-only)",
+            f"  unified:      {self.unified_path}  (FAST every {self.interval_sec:.0f}s)",
+            f"  live status:  {self.reports_dir}/pipeline_*_live.txt  (FAST, every site)",
+            f"  full reports: {self.reports_dir}/pipeline_*.txt  (DETAIL every "
+            f"{self.detail_interval_sec:.0f}s, every site)",
+            f"  wiki_report:  {self.reports_dir / 'WIKI_REPORT.txt'}  (DETAIL)",
+            f"  site errors:  {self.reports_dir}/{{tmdb,omdb,kinopoisk,letterboxd}}_ERROR_COMMANDS.txt",
+            f"  current_rpm:  {self.reports_dir / 'CURRENT_RPM_wikipedia.txt'}  (live)",
+            f"  plan export:  {self.store.excel_path}  (DETAIL + excel_every)",
+            f"  profiles:     output/profile_a2_live.xlsx  (all sources merged)",
             "=" * 72,
             "",
         ]
 
         text = "\n".join(lines)
         self.unified_path.write_text(text, encoding="utf-8")
-        self.path.write_text(text, encoding="utf-8")  # alias for existing path
+        self._last_write_ms = (time.perf_counter() - t0) * 1000.0
+        if self._last_write_ms > 2000:
+            logger.warning(
+                "UNIFIED_REPORT write slow: %.0f ms (detail=%s)",
+                self._last_write_ms,
+                do_detail,
+            )

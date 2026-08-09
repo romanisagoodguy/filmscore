@@ -15,6 +15,7 @@ from psychofilm_analyzer.scoring.phrase_engine import (
     score_dictionary,
     spectrum_score,
 )
+from psychofilm_analyzer.utils.localtime import now_str, stamp_local
 
 
 def load_dictionaries_v3(path: Optional[Path] = None) -> dict:
@@ -1102,7 +1103,7 @@ def score_profiles(
 
         live_txt.write_text(
             "PsychoFilm score-v3 live report\n"
-            f"started: {datetime.now(timezone.utc).isoformat()}\n\n",
+            f"started: {now_str()}\n\n",
             encoding="utf-8",
         )
         if live_csv.exists():

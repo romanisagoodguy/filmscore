@@ -26,6 +26,7 @@ from psychofilm_analyzer.models import EnrichedResult, InputTitle, SourcePayload
 from psychofilm_analyzer.scoring.engine import ScoringEngine
 from psychofilm_analyzer.utils.cache import CacheStore
 from psychofilm_analyzer.utils.http import HttpClient
+from psychofilm_analyzer.utils.localtime import now_str, stamp_local
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +241,7 @@ class Pipeline:
             # Fresh run: start empty text header
             live_txt.write_text(
                 "PsychoFilm gather live report\n"
-                f"started: {datetime.now(timezone.utc).isoformat()}\n\n",
+                f"started: {now_str()}\n\n",
                 encoding="utf-8",
             )
             if live_csv.exists():

@@ -19,6 +19,7 @@ from psychofilm_analyzer.pipeline import Pipeline, configure_logging
 from psychofilm_analyzer.scoring.export_v3 import write_v3_results
 from psychofilm_analyzer.scoring.v3_engine import load_dictionaries_v3, score_profiles
 from psychofilm_analyzer.utils.text import safe_int
+from psychofilm_analyzer.utils.localtime import now_str, stamp_local
 
 
 def _apply_source_flags(config: dict, args: argparse.Namespace) -> None:
@@ -255,7 +256,7 @@ def cmd_gather(args: argparse.Namespace) -> int:
     if request_debug:
         from datetime import datetime, timezone
 
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        ts = stamp_local()
         dbg_path = getattr(args, "request_debug_path", None) or (
             (config.get("pipeline") or {}).get("request_debug_path")
             or f"{out_dir}/request_debug_{ts}.txt"

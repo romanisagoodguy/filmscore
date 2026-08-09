@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from psychofilm_analyzer.utils.localtime import now_str, stamp_local
 
 logger = logging.getLogger(__name__)
 
@@ -460,7 +461,7 @@ def write_v3_results(
 ) -> dict[str, Path]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    stamp = stamp_local()
     written: dict[str, Path] = {}
 
     flats_sorted = _flats_from_results(results)
@@ -471,7 +472,7 @@ def write_v3_results(
 
     js = output_dir / f"{prefix}_{stamp}.json"
     payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": now_str(),
         "mode": "score_v3",
         "count": len(results),
         "results": results,
@@ -668,7 +669,7 @@ def bootstrap_score_live_from_checkpoint(
         tf.write(
             f"PsychoFilm score-v3 live report\n"
             f"scored: {len(results)}\n"
-            f"generated: {datetime.now(timezone.utc).isoformat()}\n\n"
+            f"generated: {now_str()}\n\n"
         )
         for i, r in enumerate(results, start=1):
             tf.write(format_score_text(r, index=i))

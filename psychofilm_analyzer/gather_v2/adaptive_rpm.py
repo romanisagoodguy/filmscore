@@ -18,13 +18,14 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from psychofilm_analyzer.utils.localtime import now_str
 
-def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "Z"
+
+def _now() -> str:
+    return now_str(with_ms=True)
 
 
 @dataclass
@@ -346,7 +347,7 @@ class AdaptiveRpmController:
         self.log_path.write_text(
             "ADAPTIVE RPM LOG — Wikipedia / site pipeline\n"
             f"site: {self.site}\n"
-            f"started: {_utc()}\n"
+            f"started: {_now()}\n"
             f"rules:\n"
             f"  - raise CURRENT_RPM by +{self.step_rpm:.1f} after every "
             f"{self.success_batch} successes (cap max_rpm={self.max_rpm:.0f})\n"
@@ -372,7 +373,7 @@ class AdaptiveRpmController:
         self.live_rpm_path.parent.mkdir(parents=True, exist_ok=True)
         text = (
             f"site={self.site}\n"
-            f"updated={_utc()}\n"
+            f"updated={_now()}\n"
             f"CURRENT_RPM={s.rpm:.2f}\n"
             f"STABLE_RPM={s.stable_rpm:.2f}\n"
             f"PEAK_RPM={s.peak_rpm:.2f}\n"
@@ -408,7 +409,8 @@ class AdaptiveRpmController:
     ) -> dict[str, Any]:
         s = self._state
         event = {
-            "time_utc": _utc(),
+            "time": _now(),
+            "time_utc": _now(),  # legacy key name; value is local system time
             "kind": kind,
             "site": self.site,
             "rpm": round(s.rpm, 4),
@@ -428,7 +430,7 @@ class AdaptiveRpmController:
         s.events.append(event)
         if self.log_path:
             block = (
-                f"\n--- {_utc()}  [{kind}] ---\n"
+                f"\n--- {_now()}  [{kind}] ---\n"
                 f"{self._format_rpm_banner()}\n"
                 f"cool_now={event['cool_pause_sec']}  cool_next={event['next_cool_pause_sec']}\n"
                 f"REASON: {reason}\n"
@@ -443,7 +445,7 @@ class AdaptiveRpmController:
         lines = []
         for e in ev:
             lines.append(
-                f"[{e.get('time_utc')}] {e.get('kind')}: "
+                f"[{e.get('time') or e.get('time_utc')}] {e.get('kind')}: "
                 f"CURRENT_RPM={e.get('current_rpm', e.get('rpm'))} "
                 f"STABLE_RPM={e.get('stable_rpm')} "
                 f"delay={e.get('delay_sec')}s cool_next={e.get('next_cool_pause_sec')}s"

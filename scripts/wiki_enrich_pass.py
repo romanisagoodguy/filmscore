@@ -20,6 +20,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from psychofilm_analyzer.utils.localtime import now_str, stamp_local
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -157,7 +158,7 @@ def _merge_wiki(row: dict, payload) -> dict:
     summary = dict(row.get("bag_summary") or {})
     summary["wikipedia"] = bool(payload.found)
     row["bag_summary"] = summary
-    row["wiki_pass_at"] = datetime.now(timezone.utc).isoformat()
+    row["wiki_pass_at"] = now_str()
     return row
 
 

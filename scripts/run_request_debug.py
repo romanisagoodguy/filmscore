@@ -20,6 +20,7 @@ import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from psychofilm_analyzer.utils.localtime import now_str, stamp_local
 
 # Project root on sys.path
 ROOT = Path(__file__).resolve().parents[1]
@@ -171,7 +172,7 @@ def main() -> int:
         print("ERROR: nothing left to gather (checkpoint may already cover filters)", file=sys.stderr)
         return 2
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    ts = stamp_local()
     out_path = Path(args.out or ROOT / "output" / f"request_debug_{ts}.txt")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
