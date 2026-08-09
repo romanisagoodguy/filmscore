@@ -13,6 +13,10 @@ import requests
 
 from psychofilm_analyzer.utils.localtime import now_str, stamp_local
 from psychofilm_analyzer.gather_v2.adaptive_rpm import AdaptiveRpmController
+from psychofilm_analyzer.gather_v2.errors import (
+    is_recoverable,
+    normalize_reason,
+)
 from psychofilm_analyzer.gather_v2.models import (
     OPEN_WORK,
     STATUS_DEFERRED,
@@ -100,8 +104,18 @@ class SitePipeline(threading.Thread):
         # For 429: never permanent-fail until many attempts (request is paused/retried)
         rate_limit_max_attempts: int = 50,
         error_commands_path: Optional[str | Path] = None,
+        worker_id: int = 0,
+        # Approach 3: only claim rows matching this endpoint suffix filter, e.g. "_en"
+        endpoint_suffix: Optional[str] = None,
+        # Approach 3: never end-queue terminal errors
+        recoverable_only_retry: bool = True,
+        # Shared cool-down map for multi-worker wikipedia (request_id -> mono)
+        shared_not_before: Optional[dict[str, float]] = None,
+        shared_not_before_lock: Optional[threading.Lock] = None,
     ):
-        super().__init__(name=f"pipeline-{site}", daemon=True)
+        wid = f"-w{worker_id}" if worker_id else ""
+        suf = endpoint_suffix or ""
+        super().__init__(name=f"pipeline-{site}{suf}{wid}", daemon=True)
         self.site = site
         self.store = store
         self.delay_sec = delay_sec
@@ -113,14 +127,20 @@ class SitePipeline(threading.Thread):
         self.excel_every = excel_every
         self.adaptive = adaptive
         self.error_commands_path = Path(error_commands_path) if error_commands_path else None
+        self.worker_id = int(worker_id or 0)
+        self.endpoint_suffix = (endpoint_suffix or "").lower() or None
+        self.recoverable_only_retry = bool(recoverable_only_retry)
         self.session = requests.Session()
         self._done = 0
         self._last_req = 0.0
         self._cmd_log_lock = threading.Lock()
         # request_id -> monotonic time when it may be claimed again (after 429/park)
-        self._not_before: dict[str, float] = {}
+        self._not_before_lock = shared_not_before_lock or threading.Lock()
+        self._not_before: dict[str, float] = (
+            shared_not_before if shared_not_before is not None else {}
+        )
         # round-robin so one bad request does not monopolize the queue
-        self._claim_offset = 0
+        self._claim_offset = int(worker_id or 0)
 
     def run(self) -> None:
         if self.adaptive:
@@ -201,10 +221,20 @@ class SitePipeline(threading.Thread):
         """If end-queue items are parked, return seconds until the soonest is ready."""
         now = time.monotonic()
         waits: list[float] = []
+        with self._not_before_lock:
+            nb_map = dict(self._not_before)
         for req in self.store.by_site(self.site):
+            if not self._matches_endpoint_filter(req):
+                continue
             if req.status not in (STATUS_RETRY, STATUS_DEFERRED):
                 continue
-            nb = self._not_before.get(req.request_id, 0.0)
+            if self.recoverable_only_retry and not is_recoverable(
+                req.deferred_reason or "",
+                http_status=req.http_status,
+                error=req.error or "",
+            ):
+                continue
+            nb = nb_map.get(req.request_id, 0.0)
             if nb > now:
                 waits.append(nb - now)
         if not waits:
@@ -212,8 +242,10 @@ class SitePipeline(threading.Thread):
         return min(waits)
 
     def _main_queue_empty(self) -> bool:
-        """True when no fresh PENDING work remains (end-queue phase may start)."""
+        """True when no fresh PENDING work remains for this worker filter."""
         for req in self.store.by_site(self.site):
+            if not self._matches_endpoint_filter(req):
+                continue
             if req.status == STATUS_PENDING:
                 return False
             if req.status == STATUS_RUNNING:
@@ -224,11 +256,13 @@ class SitePipeline(threading.Thread):
         """
         Two phases:
           1) MAIN: only PENDING (never-failed fresh work)
-          2) END: only when main empty — DEFERRED / RETRY that are past cool-down
-        Failing requests are marked deferred and processed at the right end.
+          2) END: only when main empty — DEFERRED / RETRY that are recoverable
+             and past cool-down. Terminal errors are never re-queued.
         """
         now = time.monotonic()
-        all_site = self.store.by_site(self.site)
+        all_site = [
+            r for r in self.store.by_site(self.site) if self._matches_endpoint_filter(r)
+        ]
         if not all_site:
             return []
         n = len(all_site)
@@ -236,44 +270,64 @@ class SitePipeline(threading.Thread):
         rotated = all_site[start:] + all_site[:start]
         self._claim_offset = (self._claim_offset + 1) % max(n, 1)
 
+        with self._not_before_lock:
+            nb_map = dict(self._not_before)
+
         pending: list[PlanRequest] = []
         end_ready: list[PlanRequest] = []
         for req in rotated:
             if req.status == STATUS_PENDING:
                 pending.append(req)
             elif req.status in (STATUS_DEFERRED, STATUS_RETRY):
-                nb = self._not_before.get(req.request_id, 0.0)
+                # Approach 3: only recoverable reasons re-enter the queue
+                if self.recoverable_only_retry and not is_recoverable(
+                    req.deferred_reason or "",
+                    http_status=req.http_status,
+                    error=req.error or "",
+                ):
+                    # Convert false deferred → terminal skipped once
+                    self.store.update_fields(
+                        req.request_id,
+                        status=STATUS_SKIPPED,
+                        deferred="",
+                        deferred_reason=normalize_reason(
+                            req.deferred_reason or "",
+                            http_status=req.http_status,
+                            error=req.error or "",
+                        ),
+                        error=(req.error or "") + " | converted to TERMINAL (non-recoverable)",
+                        finished_at=_now(),
+                    )
+                    continue
+                nb = nb_map.get(req.request_id, 0.0)
                 if now >= nb:
                     end_ready.append(req)
 
-        def _wiki_lang_rank(r: PlanRequest) -> int:
-            """EN first, then RU, then DE, then other — avoid 3-lang blast per film."""
-            ep = (r.endpoint_type or "").lower()
-            if ep.endswith("_en") or ep == "summary_en":
-                return 0
-            if ep.endswith("_ru") or ep == "summary_ru":
-                return 1
-            if ep.endswith("_de") or ep == "summary_de":
-                return 2
-            return 3
-
         # Phase 1: main queue only
         if pending:
-            if self.site == "wikipedia":
-                # Prefer all EN work before RU/DE so one language can finish cleanly.
-                pending.sort(key=lambda r: (_wiki_lang_rank(r), r.film_index, r.request_id))
+            pending.sort(key=lambda r: (r.film_index, r.request_id))
             return pending
-        # Phase 2: right end — deferred/failing batch
+        # Phase 2: recoverable end-queue only
         if end_ready:
-            # fewer attempts first; for wiki also EN before RU/DE
-            if self.site == "wikipedia":
-                end_ready.sort(
-                    key=lambda r: (int(r.attempts or 0), _wiki_lang_rank(r), r.request_id)
-                )
-            else:
-                end_ready.sort(key=lambda r: (int(r.attempts or 0), r.request_id))
+            end_ready.sort(key=lambda r: (int(r.attempts or 0), r.request_id))
             return end_ready
         return []
+
+    def _park_until(self, request_id: str, park_sec: float) -> None:
+        if park_sec <= 0:
+            return
+        with self._not_before_lock:
+            self._not_before[request_id] = time.monotonic() + park_sec
+
+    def _is_parked(self, request_id: str) -> bool:
+        with self._not_before_lock:
+            nb = self._not_before.get(request_id, 0.0)
+        return time.monotonic() < nb
+
+    def _seconds_until_unpark(self, request_id: str) -> float:
+        with self._not_before_lock:
+            nb = self._not_before.get(request_id, 0.0)
+        return max(0.0, nb - time.monotonic())
 
     def _mark_deferred(
         self,
@@ -288,23 +342,68 @@ class SitePipeline(threading.Thread):
         park_sec: float = 0.0,
         permanent: bool = False,
     ) -> None:
-        """Mark request as deferred (end queue) or permanent failed after max attempts."""
+        """
+        End-queue only for recoverable errors (Approach 3).
+        Terminal errors (404, not_found, empty search, 4xx) → skipped/failed, never retry.
+        """
         attempts = int(req.attempts or 1)
         max_a = int(req.max_attempts or self.max_attempts)
-        if self.adaptive and reason in {"429", "5xx", "exception"}:
+        norm = normalize_reason(reason, http_status=http_status, error=error)
+        recoverable = is_recoverable(norm, http_status=http_status, error=error)
+
+        if self.adaptive and norm in {"rate_limit", "429", "5xx", "exception", "timeout"}:
             max_a = max(self.rate_limit_max_attempts, max_a)
 
-        if permanent or attempts >= max_a:
+        # Terminal or permanent → never end-queue
+        if permanent or not recoverable:
+            st = STATUS_SKIPPED if norm in {
+                "not_found",
+                "omdb_not_found",
+                "kp_search_empty",
+                "http_400",
+                "http_404",
+            } else STATUS_FAILED
+            note = f"TERMINAL ({norm}): {error} — will NOT retry at end-queue"
+            mark = ""
+            self.store.update_fields(
+                req.request_id,
+                status=st,
+                http_status=http_status if http_status is not None else req.http_status,
+                duration_ms=round(duration_ms, 1),
+                error=note if not repro_cmd else f"{note} | REPRO: {repro_cmd}",
+                reproducible_command=repro_cmd or getattr(req, "reproducible_command", "") or "",
+                deferred="",
+                deferred_reason=norm,
+                finished_at=_now(),
+                result_preview=(preview or "")[:200],
+            )
+            logger.info(
+                "[%s] TERMINAL %s reason=%s status=%s (no end-queue)",
+                self.site,
+                req.request_id,
+                norm,
+                st,
+            )
+            return
+
+        if attempts >= max_a:
             st = STATUS_FAILED
             mark = "yes"
-            note = f"DEFERRED_EXHAUSTED after {attempts} attempts ({reason}): {error}"
+            note = f"RECOVERABLE_EXHAUSTED after {attempts} attempts ({norm}): {error}"
+        elif self.recoverable_only_retry:
+            st = STATUS_DEFERRED
+            mark = "yes"
+            note = (
+                f"DEFERRED_TO_END ({norm}): {error} — recoverable; "
+                f"retry only after main queue"
+            )
         else:
             st = STATUS_DEFERRED
             mark = "yes"
-            note = f"DEFERRED_TO_END ({reason}): {error} — will retry after main queue"
+            note = f"DEFERRED_TO_END ({norm}): {error} — will retry after main queue"
 
-        if park_sec > 0:
-            self._not_before[req.request_id] = time.monotonic() + park_sec
+        if park_sec > 0 and st == STATUS_DEFERRED:
+            self._park_until(req.request_id, park_sec)
             note += f" | parked {park_sec:.0f}s before end-queue retry"
 
         if repro_cmd and "REPRO:" not in note:
@@ -318,7 +417,7 @@ class SitePipeline(threading.Thread):
             error=note,
             reproducible_command=repro_cmd or getattr(req, "reproducible_command", "") or "",
             deferred=mark,
-            deferred_reason=reason,
+            deferred_reason=norm,
             finished_at=_now(),
             result_preview=(preview or "")[:200],
         )
@@ -327,12 +426,26 @@ class SitePipeline(threading.Thread):
             self.site,
             req.request_id,
             mark,
-            reason,
+            norm,
             st,
         )
 
+    def _matches_endpoint_filter(self, req: PlanRequest) -> bool:
+        if not self.endpoint_suffix:
+            return True
+        ep = (req.endpoint_type or "").lower()
+        suf = self.endpoint_suffix
+        if ep.endswith(suf) or ep == f"summary{suf}" or ep.endswith(suf.lstrip("_")):
+            return True
+        # also match _en in request_id
+        if (req.request_id or "").lower().endswith(suf):
+            return True
+        return False
+
     def _claim_next(self) -> Optional[PlanRequest]:
         for req in self._ordered_candidates():
+            if not self._matches_endpoint_filter(req):
+                continue
             if not deps_ready(self.store, req):
                 continue
             ok, err = resolve_request(self.store, req)
@@ -344,6 +457,7 @@ class SitePipeline(threading.Thread):
                         req.request_id,
                         status=STATUS_SKIPPED,
                         error=err,
+                        deferred_reason="dependency_failed",
                         finished_at=_now(),
                     )
                     continue
@@ -352,6 +466,7 @@ class SitePipeline(threading.Thread):
                         req.request_id,
                         status=STATUS_SKIPPED,
                         error=err,
+                        deferred_reason="not_found",
                         finished_at=_now(),
                     )
                     continue
@@ -370,14 +485,18 @@ class SitePipeline(threading.Thread):
                     finished_at=_now(),
                 )
                 continue
-            claimed = self.store.update_fields(
+            # Atomic claim — required for parallel wikipedia workers
+            claimed = self.store.claim_if(
                 req.request_id,
-                status=STATUS_RUNNING,
+                from_statuses={STATUS_PENDING, STATUS_DEFERRED, STATUS_RETRY},
+                to_status=STATUS_RUNNING,
                 started_at=_now(),
                 url=req.url,
                 params_json=req.params_json,
                 attempts=int(req.attempts or 0) + 1,
             )
+            if claimed is None:
+                continue  # another worker won the race
             return claimed
         return None
 
@@ -489,7 +608,8 @@ class SitePipeline(threading.Thread):
             path = self.store.save_response(req.request_id, data)
 
             if ok:
-                self._not_before.pop(req.request_id, None)
+                with self._not_before_lock:
+                    self._not_before.pop(req.request_id, None)
                 self.store.update_fields(
                     req.request_id,
                     status=STATUS_SUCCESS,
@@ -786,7 +906,7 @@ class SitePipeline(threading.Thread):
                 cool_sec = float(event.get("cool_pause_sec") or 60.0)
             else:
                 cool_sec = 60.0
-            self._not_before[req.request_id] = time.monotonic() + cool_sec
+            self._park_until(req.request_id, cool_sec)
             self.store.update_fields(
                 req.request_id,
                 status=STATUS_DEFERRED,
@@ -1000,7 +1120,7 @@ class SitePipeline(threading.Thread):
                 permanent=True,
             )
         else:
-            self._not_before[req.request_id] = time.monotonic() + cool_sec
+            self._park_until(req.request_id, cool_sec)
             self.store.update_fields(
                 req.request_id,
                 status=STATUS_DEFERRED,
@@ -1156,14 +1276,24 @@ class Approach2Executor:
         excel_every: int = 50,
         progress_kwargs: Optional[dict] = None,
         adaptive_sites: Optional[dict[str, dict[str, Any]]] = None,
+        # Approach 3 options
+        approach: int = 2,
+        wikipedia_lang_workers: bool = False,
+        recoverable_only_retry: bool = True,
+        smart_progress: bool = False,
     ):
         self.store = store
         self.site_delays = site_delays
         self.timeout_sec = timeout_sec
         self.excel_every = excel_every
         self.adaptive_sites = adaptive_sites or {}
+        self.approach = int(approach or 2)
+        self.wikipedia_lang_workers = bool(wikipedia_lang_workers) or self.approach >= 3
+        self.recoverable_only_retry = bool(recoverable_only_retry)
         self.stop_event = threading.Event()
         pk = dict(progress_kwargs or {})
+        pk.setdefault("smart_progress", smart_progress or self.approach >= 3)
+        pk.setdefault("approach", self.approach)
         self.progress = ProgressReporter(
             store,
             site_delays=site_delays,
@@ -1172,6 +1302,9 @@ class Approach2Executor:
         )
         self.pipelines: list[SitePipeline] = []
         self.adaptive_controllers: dict[str, AdaptiveRpmController] = {}
+        # Shared cool map for all wiki language workers
+        self._wiki_not_before: dict[str, float] = {}
+        self._wiki_not_before_lock = threading.Lock()
 
     def run(self) -> None:
         sites = self.store.sites()
@@ -1181,25 +1314,27 @@ class Approach2Executor:
             or (self.store.plan_dir / "reports")
         )
         reports_dir.mkdir(parents=True, exist_ok=True)
-        # Fresh session logs — do NOT keep prior runs' wiki/error command dumps
         reset_session_command_logs(reports_dir, sites=sites)
 
         for site in sites:
             delay = float(self.site_delays.get(site, 0.4))
             adaptive = None
             cfg = self.adaptive_sites.get(site)
-            # Wikipedia always gets adaptive RPM unless explicitly disabled
             if site == "wikipedia" and cfg is not False:
                 acfg = dict(cfg or {})
                 initial_rpm = float(
                     acfg.get("initial_rpm")
                     or AdaptiveRpmController.delay_to_rpm(delay)
                 )
+                # Approach 3: shared max_rpm default 80 for multi-worker safety
+                max_rpm = float(acfg.get("max_rpm", 200.0))
+                if self.wikipedia_lang_workers and max_rpm > 100:
+                    max_rpm = float(acfg.get("max_rpm_parallel", 80.0))
                 adaptive = AdaptiveRpmController(
                     site,
-                    initial_rpm=initial_rpm,
+                    initial_rpm=min(initial_rpm, max_rpm),
                     min_rpm=float(acfg.get("min_rpm", 5.0)),
-                    max_rpm=float(acfg.get("max_rpm", 200.0)),
+                    max_rpm=max_rpm,
                     step_rpm=float(acfg.get("step_rpm", 10.0)),
                     cool_base_sec=float(acfg.get("cool_base_sec", 30.0)),
                     cool_step_sec=float(acfg.get("cool_step_sec", 15.0)),
@@ -1213,26 +1348,58 @@ class Approach2Executor:
                 if hasattr(self.progress, "set_adaptive_snapshot"):
                     self.progress.set_adaptive_snapshot(site, adaptive.snapshot())
 
-            p = SitePipeline(
-                site,
-                self.store,
-                delay_sec=delay,
-                timeout_sec=self.timeout_sec,
-                progress=self.progress,
-                stop_event=self.stop_event,
-                excel_every=self.excel_every,
-                adaptive=adaptive,
-                rate_limit_max_attempts=int(
-                    (self.adaptive_sites.get(site) or {}).get("rate_limit_max_attempts", 50)
-                ),
-                error_commands_path=(
-                    None
-                    if site == "wikipedia"
-                    else reports_dir / f"{site}_ERROR_COMMANDS.txt"
-                ),
+            rate_max = int(
+                (self.adaptive_sites.get(site) or {}).get("rate_limit_max_attempts", 50)
             )
-            self.pipelines.append(p)
-            p.start()
+            err_path = (
+                None
+                if site == "wikipedia"
+                else reports_dir / f"{site}_ERROR_COMMANDS.txt"
+            )
+
+            if site == "wikipedia" and self.wikipedia_lang_workers:
+                # Three language workers: EN / RU / DE — shared adaptive RPM
+                for i, suf in enumerate(("_en", "_ru", "_de")):
+                    p = SitePipeline(
+                        site,
+                        self.store,
+                        delay_sec=delay,
+                        timeout_sec=self.timeout_sec,
+                        progress=self.progress,
+                        stop_event=self.stop_event,
+                        excel_every=self.excel_every,
+                        adaptive=adaptive,
+                        rate_limit_max_attempts=rate_max,
+                        error_commands_path=err_path,
+                        worker_id=i + 1,
+                        endpoint_suffix=suf,
+                        recoverable_only_retry=self.recoverable_only_retry,
+                        shared_not_before=self._wiki_not_before,
+                        shared_not_before_lock=self._wiki_not_before_lock,
+                    )
+                    self.pipelines.append(p)
+                    p.start()
+                    logger.info(
+                        "Wikipedia lang worker %s started (filter=%s) shared adaptive",
+                        i + 1,
+                        suf,
+                    )
+            else:
+                p = SitePipeline(
+                    site,
+                    self.store,
+                    delay_sec=delay,
+                    timeout_sec=self.timeout_sec,
+                    progress=self.progress,
+                    stop_event=self.stop_event,
+                    excel_every=self.excel_every,
+                    adaptive=adaptive,
+                    rate_limit_max_attempts=rate_max,
+                    error_commands_path=err_path,
+                    recoverable_only_retry=self.recoverable_only_retry,
+                )
+                self.pipelines.append(p)
+                p.start()
         try:
             for p in self.pipelines:
                 p.join()
@@ -1241,7 +1408,6 @@ class Approach2Executor:
             for p in self.pipelines:
                 p.join(timeout=5)
         finally:
-            # Final adaptive summary into wiki report area
             for site, ctrl in self.adaptive_controllers.items():
                 snap = ctrl.snapshot()
                 logger.info(

@@ -78,6 +78,8 @@ class ProgressReporter:
         approach1_done: int = 0,
         approach2_film_total: int = 0,
         inherit_from_a1: bool = True,
+        smart_progress: bool = False,
+        approach: int = 2,
     ):
         self.store = store
         self.site_delays = site_delays or {}
@@ -91,6 +93,8 @@ class ProgressReporter:
         self.approach1_done = int(approach1_done or 0)
         self.approach2_film_total = int(approach2_film_total or 0)
         self.inherit_from_a1 = inherit_from_a1
+        self.smart_progress = bool(smart_progress)
+        self.approach = int(approach or 2)
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._completions: dict[str, deque[float]] = defaultdict(deque)
@@ -276,6 +280,44 @@ class ProgressReporter:
         )
         with self._lock:
             rpm_all = float(sum(len(q) for q in self._completions.values()))
+
+        # Approach 3 smart progress: exclude non-accomplishable (terminal) from
+        # "still to do"; % = settled / (settled + still_possible)
+        smart_pct = None
+        accomplishable = total
+        terminal_n = 0
+        recoverable_open = 0
+        if self.smart_progress:
+            from psychofilm_analyzer.gather_v2.errors import classify_for_progress
+
+            success_n = 0
+            other_open = 0
+            for req in self.store.all():
+                bucket = classify_for_progress(
+                    req.status,
+                    deferred_reason=req.deferred_reason or "",
+                    error=req.error or "",
+                    http_status=req.http_status,
+                )
+                if bucket == "success":
+                    success_n += 1
+                elif bucket == "terminal":
+                    terminal_n += 1
+                elif bucket == "recoverable_open":
+                    recoverable_open += 1
+                else:
+                    other_open += 1
+            settled = success_n + terminal_n
+            still = recoverable_open + other_open
+            accomplishable = settled + still  # = total when all classified
+            # Denominator drops terminal from "impossible remaining" already settled
+            # User: % based on total minus cannot-accomplish → settled/accomplishable
+            # where cannot-accomplish are terminal and already in settled.
+            smart_pct = _pct(settled, max(1, accomplishable))
+            # For ETA use only still-possible open work
+            pending = still
+            done = settled
+
         eta = (pending / rpm_all) * 60.0 if rpm_all > 0 and pending > 0 else None
         return {
             "total": total,
@@ -287,7 +329,11 @@ class ProgressReporter:
             "skipped": all_c.get(STATUS_SKIPPED, 0),
             "retry": all_c.get(STATUS_RETRY, 0),
             "deferred": all_c.get(STATUS_DEFERRED, 0),
-            "pct": _pct(done, total),
+            "pct": smart_pct if smart_pct is not None else _pct(done, total),
+            "pct_mode": "smart_accomplishable" if self.smart_progress else "raw",
+            "terminal_settled": terminal_n,
+            "recoverable_open": recoverable_open,
+            "accomplishable": accomplishable,
             "rpm": round(rpm_all, 2),
             "eta_sec": round(eta, 1) if eta is not None else None,
             "counts": all_c,
@@ -526,6 +572,15 @@ class ProgressReporter:
             f"deferred={req_p.get('deferred', 0)}",
             f"  observed_finish_rpm={req_p['rpm']} req/min  "
             f"ETA={_fmt_eta(req_p['eta_sec'])}",
+            f"  progress_mode: {req_p.get('pct_mode', 'raw')}  approach={self.approach}",
+        ]
+        if self.smart_progress:
+            lines += [
+                f"  terminal_settled (impossible, not retried): {req_p.get('terminal_settled', 0)}",
+                f"  recoverable_open (end-queue only): {req_p.get('recoverable_open', 0)}",
+                f"  accomplishable base: {req_p.get('accomplishable', req_p['total'])}",
+            ]
+        lines += [
             "",
             "=" * 72,
             "PER-PIPELINE SUMMARY",

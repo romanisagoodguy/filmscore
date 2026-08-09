@@ -76,7 +76,8 @@ pipeline:
 gather:
   approach: 1
 
-# Approach 2 only (Request Plan + independent pipelines)
+# Approach 2/3 (Request Plan + independent pipelines)
+# Approach 3 = A2 + wiki language workers + recoverable-only retries + smart progress
 gather_v2:
   plan_dir: output/gather_v2
   # Overall progress: reports_dir/UNIFIED_REPORT.txt (only; no pipeline_progress.txt alias)
@@ -88,12 +89,17 @@ gather_v2:
   # Wikipedia for ALL catalog films (EN + RU + DE / German)
   include_wikipedia: true
   wikipedia_langs: [en, ru, de]
-  # Adaptive RPM for Wikipedia pipeline (Approach 2)
+  # Approach 3: three wiki workers split by language (shared adaptive RPM)
+  wikipedia_lang_workers: false   # forced true when --approach 3
+  recoverable_only_retry: true    # only 429/5xx/network go to end-queue
+  smart_progress: false           # forced true when --approach 3
+  # Adaptive RPM for Wikipedia pipeline
   # Step up toward max_rpm; on 429 roll back to last stable RPM.
   wikipedia_adaptive_rpm:
     # initial_rpm derived from site_delays_sec.wikipedia if omitted
     min_rpm: 5.0
-    max_rpm: 200.0             # climb stepwise up to 200 req/min
+    max_rpm: 200.0             # single-worker climb cap (approach 2)
+    max_rpm_parallel: 80.0     # shared cap when 3 language workers (approach 3)
     step_rpm: 10.0             # absolute step after each success_batch
     cool_base_sec: 30          # first 429 → GLOBAL wiki pause 30s
     cool_step_sec: 15          # each further 429 → cool +15s

@@ -137,11 +137,12 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument(
         "--approach",
         type=int,
-        choices=[1, 2],
+        choices=[1, 2, 3],
         default=1,
         help=(
             "Gather approach: 1 = sequential film-by-film (default, scoring-compatible); "
-            "2 = Request Plan + independent per-site pipelines"
+            "2 = Request Plan + independent per-site pipelines; "
+            "3 = A2 + wiki EN/RU/DE workers, recoverable-only retries, smart progress %%"
         ),
     )
     g.add_argument(
@@ -209,8 +210,8 @@ def cmd_gather(args: argparse.Namespace) -> int:
         return 2
 
     approach = int(getattr(args, "approach", None) or (config.get("gather") or {}).get("approach", 1) or 1)
-    if approach == 2:
-        return _cmd_gather_approach2(args, config, items)
+    if approach in (2, 3):
+        return _cmd_gather_approach2(args, config, items, approach=approach)
 
     # ----- Approach 1 (sequential) — original path, unchanged internals -----
     pipe = Pipeline(config, load_dictionaries())
@@ -367,8 +368,9 @@ def _cmd_gather_approach2(
     args: argparse.Namespace,
     config: dict,
     items: list,
+    approach: int = 2,
 ) -> int:
-    """Approach 2 entry — separate from sequential Pipeline.gather."""
+    """Approach 2/3 entry — plan + pipelines (3 adds wiki workers + smart retry/progress)."""
     from psychofilm_analyzer.gather_v2.runner import run_gather_v2
     from psychofilm_analyzer.io.input_loader import load_titles
 
@@ -376,6 +378,7 @@ def _cmd_gather_approach2(
     resume = not getattr(args, "no_resume", False)
     request_debug = bool(getattr(args, "request_debug", False))
     plan_only = bool(getattr(args, "plan_only", False))
+    approach = int(approach or 2)
 
     # --no-inherit-a1 forces False; otherwise config gather_v2.inherit_approach1 (default True)
     if getattr(args, "no_inherit_a1", False):
@@ -392,8 +395,11 @@ def _cmd_gather_approach2(
             print(f"  inherit+limit: loaded full catalog {len(items)} titles; "
                   f"will process up to {pending_limit} pending")
 
-    print(f"PsychoFilm Analyzer v{__version__} — GATHER Approach 2")
-    print("  Request Plan + independent per-site pipelines")
+    print(f"PsychoFilm Analyzer v{__version__} — GATHER Approach {approach}")
+    if approach >= 3:
+        print("  Plan + pipelines + wiki EN/RU/DE workers + recoverable-only retries + smart %")
+    else:
+        print("  Request Plan + independent per-site pipelines")
     print(f"  catalog_items: {len(items)}")
     print(f"  resume: {resume}")
     print(f"  plan_only: {plan_only}")
@@ -410,8 +416,9 @@ def _cmd_gather_approach2(
         request_debug=request_debug,
         inherit_approach1=inherit_a1,
         pending_limit=pending_limit,
+        approach=approach,
     )
-    print("\nApproach 2 complete.")
+    print(f"\nApproach {approach} complete.")
     for k, v in summary.items():
         if k == "exports" and isinstance(v, dict):
             for ek, ev in v.items():

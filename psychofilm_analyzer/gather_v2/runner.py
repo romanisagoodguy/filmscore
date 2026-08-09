@@ -55,9 +55,13 @@ def run_gather_v2(
     request_debug: bool = False,
     inherit_approach1: bool = True,
     pending_limit: Optional[int] = None,
+    approach: int = 2,
 ) -> dict[str, Any]:
     """
-    Run Approach 2 gather.
+    Run Approach 2/3 gather (shared plan+pipelines).
+
+    Approach 3 adds: language-split Wikipedia workers, recoverable-only end-queue,
+    and smart progress % (excludes terminal impossible from incomplete work).
 
     Inherits Approach 1 checkpoint films (skip re-fetch) and only plans/executes
     the remaining catalog titles. Writes unified + per-pipeline reports.
@@ -65,6 +69,7 @@ def run_gather_v2(
     pending_limit: if set, only process this many pending films this run
     (useful with inherit A1: e.g. 20 next remaining films).
     """
+    approach = int(approach or 2)
     out_dir = Path((config.get("output") or {}).get("dir", "output"))
     a2 = config.get("gather_v2") or {}
     pipe_cfg = config.get("pipeline") or {}
@@ -93,7 +98,7 @@ def run_gather_v2(
         pending_items = pending_items[: int(pending_limit)]
     a2_film_total = len(pending_items)
 
-    print("Approach 2: inherit Approach 1 results")
+    print(f"Approach {approach}: inherit Approach 1 results")
     print(f"  approach1_checkpoint: {a1_ckpt}  exists={a1_ckpt.exists()}")
     print(f"  catalog_total:        {catalog_total}")
     print(f"  approach1_done:       {a1_done}  (skip re-fetch)")
@@ -186,7 +191,9 @@ def run_gather_v2(
             existing = 0
 
     if existing and resume:
-        logger.info("Approach 2 resume: loaded %s requests from plan", existing)
+        from psychofilm_analyzer.gather_v2.errors import is_recoverable
+
+        logger.info("Approach %s resume: loaded %s requests from plan", approach, existing)
         for req in store.all():
             if req.status == STATUS_RUNNING:
                 store.update_fields(
@@ -194,19 +201,39 @@ def run_gather_v2(
                     status=STATUS_DEFERRED,
                     deferred="yes",
                     deferred_reason="interrupted",
-                    error="interrupted running — DEFERRED_TO_END",
+                    error="interrupted running — DEFERRED_TO_END (recoverable)",
                 )
             elif req.status == STATUS_FAILED and int(req.attempts or 0) < int(
                 req.max_attempts or 2
             ):
+                # Approach 3: only re-queue recoverable failures
+                if approach >= 3 and not is_recoverable(
+                    req.deferred_reason or "",
+                    http_status=req.http_status,
+                    error=req.error or "",
+                ):
+                    continue
                 store.update_fields(
                     req.request_id,
                     status=STATUS_DEFERRED,
                     deferred="yes",
-                    deferred_reason="resume_failed",
+                    deferred_reason=req.deferred_reason or "resume_failed",
                     error=(req.error or "failed") + " — DEFERRED_TO_END on resume",
                 )
             elif req.status == STATUS_RETRY:
+                if approach >= 3 and not is_recoverable(
+                    req.deferred_reason or "",
+                    http_status=req.http_status,
+                    error=req.error or "",
+                ):
+                    store.update_fields(
+                        req.request_id,
+                        status=STATUS_SKIPPED,
+                        deferred="",
+                        deferred_reason=req.deferred_reason or "terminal",
+                        error=(req.error or "") + " | terminal on resume — no retry",
+                    )
+                    continue
                 store.update_fields(
                     req.request_id,
                     status=STATUS_DEFERRED,
@@ -337,12 +364,17 @@ def run_gather_v2(
     wiki_adapt.setdefault("step_rpm", 10.0)
     wiki_adapt.setdefault("success_batch", 8)
     wiki_adapt.setdefault("min_rpm", 5.0)
-    wiki_adapt.setdefault("max_rpm", 200.0)
+    wiki_adapt.setdefault("max_rpm", 200.0 if approach < 3 else 80.0)
+    wiki_adapt.setdefault("max_rpm_parallel", 80.0)
     wiki_adapt.setdefault("rate_limit_max_attempts", 50)
     # initial RPM from configured delay (e.g. 1.5s → 40 RPM) unless overridden
     if "initial_rpm" not in wiki_adapt:
         d0 = float(delays.get("wikipedia", 1.5))
         wiki_adapt["initial_rpm"] = max(5.0, min(40.0, 60.0 / max(d0, 0.3)))
+
+    wiki_lang_workers = approach >= 3 or bool(a2cfg.get("wikipedia_lang_workers", False))
+    recoverable_only = approach >= 3 or bool(a2cfg.get("recoverable_only_retry", True))
+    smart_progress = approach >= 3 or bool(a2cfg.get("smart_progress", False))
 
     executor = Approach2Executor(
         store,
@@ -357,17 +389,27 @@ def run_gather_v2(
             "approach2_film_total": len(work_items) or a2_film_total,
             "inherit_from_a1": inherit,
             "detail_interval_sec": progress_detail_interval,
+            "smart_progress": smart_progress,
+            "approach": approach,
         },
         adaptive_sites={"wikipedia": wiki_adapt},
+        approach=approach,
+        wikipedia_lang_workers=wiki_lang_workers,
+        recoverable_only_retry=recoverable_only,
+        smart_progress=smart_progress,
     )
     print(
         "  wikipedia adaptive RPM: "
         f"start={wiki_adapt['initial_rpm']:.2f}/min  "
-        f"step=+{wiki_adapt['step_rpm']:.0f}  max={wiki_adapt['max_rpm']:.0f}  "
+        f"step=+{wiki_adapt['step_rpm']:.0f}  max={wiki_adapt.get('max_rpm_parallel', wiki_adapt['max_rpm']):.0f}  "
         f"every {wiki_adapt['success_batch']} OK; "
         f"on 429: cool {wiki_adapt['cool_base_sec']:.0f}s (+"
         f"{wiki_adapt['cool_step_sec']:.0f}s), ROLL BACK to STABLE_RPM"
     )
+    if wiki_lang_workers:
+        print("  wikipedia workers: 3 language pipelines (EN | RU | DE) shared adaptive RPM")
+    print(f"  recoverable_only_retry: {recoverable_only}")
+    print(f"  smart_progress: {smart_progress}")
     print(f"  adaptive log → {reports_dir / 'adaptive_rpm_wikipedia.txt'}")
     print(f"  live RPM     → {reports_dir / 'CURRENT_RPM_wikipedia.txt'}")
 

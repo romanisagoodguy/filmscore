@@ -112,6 +112,29 @@ class PlanStore:
         self._maybe_flush()
         return req
 
+    def claim_if(
+        self,
+        request_id: str,
+        *,
+        from_statuses: set[str],
+        to_status: str,
+        **fields: Any,
+    ) -> Optional[PlanRequest]:
+        """Atomic compare-and-set claim so parallel workers never double-take a row."""
+        with self._lock:
+            req = self._by_id.get(request_id)
+            if not req or req.status not in from_statuses:
+                return None
+            req.status = to_status
+            for k, v in fields.items():
+                if hasattr(req, k):
+                    setattr(req, k, v)
+            self._mark_dirty_unlocked()
+            # return a shallow snapshot identity (same object under lock is fine after fields set)
+            claimed = req
+        self._maybe_flush()
+        return claimed
+
     def counts_by_status(self, site: Optional[str] = None) -> dict[str, int]:
         with self._lock:
             out: dict[str, int] = {}
