@@ -24,7 +24,24 @@ from psychofilm_analyzer.utils.localtime import now_str, stamp_local
 
 def _apply_source_flags(config: dict, args: argparse.Namespace) -> None:
     if args.output_dir:
-        config.setdefault("output", {})["dir"] = args.output_dir
+        # Isolate ALL gather/score artifacts under the chosen output root so a
+        # second film list never overwrites output/gather_v2 from another run.
+        from pathlib import Path
+
+        od = Path(args.output_dir)
+        config.setdefault("output", {})["dir"] = str(od)
+        a2 = config.setdefault("gather_v2", {})
+        a2["plan_dir"] = str(od / "gather_v2")
+        a2["reports_dir"] = str(od / "gather_v2" / "reports")
+        a2["checkpoint_jsonl"] = str(od / "gather_v2" / "gather_v2_checkpoint.jsonl")
+        a2["approach1_checkpoint"] = str(od / "gather_checkpoint.jsonl")
+        pipe = config.setdefault("pipeline", {})
+        pipe["gather_checkpoint"] = str(od / "gather_checkpoint.jsonl")
+        pipe["gather_progress"] = str(od / "gather_progress.json")
+        pipe["gather_live_txt"] = str(od / "gather_live.txt")
+        pipe["gather_live_csv"] = str(od / "gather_live.csv")
+        pipe["gather_live_xlsx"] = str(od / "gather_live.xlsx")
+        pipe["state_file"] = str(od / "pipeline_state.json")
     if getattr(args, "no_letterboxd", False):
         config.setdefault("sources", {})["letterboxd"] = False
     if getattr(args, "no_wikipedia", False):

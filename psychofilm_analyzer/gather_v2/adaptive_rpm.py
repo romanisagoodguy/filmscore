@@ -172,12 +172,28 @@ class AdaptiveRpmController:
             return self._state.stable_rpm
 
     def wait_turn(self, stop_event: Optional[threading.Event] = None) -> None:
-        """Sleep until allowed by current delay (inter-request spacing)."""
+        """Reserve the next global slot (multi-worker safe) then sleep if needed.
+
+        Token-bucket style: each caller advances ``_last_request_mono`` by
+        ``delay_sec`` under the lock so N workers share one target RPM instead
+        of all racing past the same gap.
+        """
         with self._lock:
-            delay = self._state.delay_sec
+            delay = max(0.05, float(self._state.delay_sec))
+            now = time.monotonic()
             last = self._last_request_mono
-        elapsed = time.monotonic() - last
-        remain = delay - elapsed
+            if last <= 0:
+                # first request — start immediately, stamp slot
+                self._last_request_mono = now
+                remain = 0.0
+            else:
+                next_slot = last + delay
+                if next_slot <= now:
+                    self._last_request_mono = now
+                    remain = 0.0
+                else:
+                    self._last_request_mono = next_slot
+                    remain = next_slot - now
         if remain <= 0:
             return
         if stop_event is not None:
@@ -186,9 +202,12 @@ class AdaptiveRpmController:
             time.sleep(remain)
 
     def mark_request_started(self) -> None:
+        """Count a started request. Slot timing is owned by wait_turn()."""
         with self._lock:
-            self._last_request_mono = time.monotonic()
             self._state.total_requests += 1
+            # If wait_turn was skipped (non-adaptive path misuse), keep last fresh
+            if self._last_request_mono <= 0:
+                self._last_request_mono = time.monotonic()
             self._write_live_rpm_file_unlocked()
 
     def on_success(self, request_id: str = "") -> dict[str, Any]:
@@ -324,12 +343,26 @@ class AdaptiveRpmController:
             self._write_live_rpm_file_unlocked()
             return event
 
-    def on_other_result(self, *, ok: bool, request_id: str = "", http_status: Any = None) -> None:
-        """Non-success / non-429 outcomes: do not change RPM (except count)."""
+    def on_other_result(
+        self,
+        *,
+        ok: bool,
+        request_id: str = "",
+        http_status: Any = None,
+        break_streak: Optional[bool] = None,
+    ) -> None:
+        """Non-success / non-429 outcomes.
+
+        By default a failed/other result breaks the success streak. Callers that
+        hit a *healthy* terminal outcome (e.g. durable wiki not_found) should
+        pass ``break_streak=False`` or use :meth:`on_success` so RPM can climb.
+        """
         with self._lock:
             if not ok:
                 self._state.total_fail_other += 1
-                self._state.success_streak = 0
+                do_break = True if break_streak is None else bool(break_streak)
+                if do_break:
+                    self._state.success_streak = 0
             self._write_live_rpm_file_unlocked()
 
     def apply_cool_pause(self, seconds: float, stop_event: Optional[threading.Event] = None) -> None:

@@ -73,9 +73,23 @@ def run_gather_v2(
     out_dir = Path((config.get("output") or {}).get("dir", "output"))
     a2 = config.get("gather_v2") or {}
     pipe_cfg = config.get("pipeline") or {}
-    plan_dir = Path(a2.get("plan_dir") or (out_dir / "gather_v2"))
+    # Prefer paths under out_dir so -o isolates runs even if default.yaml
+    # still lists output/gather_v2.
+    raw_plan = a2.get("plan_dir")
+    if raw_plan:
+        plan_dir = Path(raw_plan)
+        # Rebase default-style paths that sit under "output/" when out_dir differs
+        try:
+            if plan_dir.as_posix().startswith("output/") and out_dir.as_posix() != "output":
+                plan_dir = out_dir / "gather_v2"
+        except Exception:
+            pass
+    else:
+        plan_dir = out_dir / "gather_v2"
     plan_dir.mkdir(parents=True, exist_ok=True)
     reports_dir = Path(a2.get("reports_dir") or (plan_dir / "reports"))
+    if reports_dir.as_posix().startswith("output/") and out_dir.as_posix() != "output":
+        reports_dir = plan_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     a1_ckpt = Path(
@@ -83,6 +97,8 @@ def run_gather_v2(
         or pipe_cfg.get("gather_checkpoint")
         or (out_dir / "gather_checkpoint.jsonl")
     )
+    if a1_ckpt.as_posix().startswith("output/") and out_dir.as_posix() != "output":
+        a1_ckpt = out_dir / "gather_checkpoint.jsonl"
     # Explicit function argument wins (CLI --no-inherit-a1 must override config)
     inherit = bool(inherit_approach1)
 
@@ -327,9 +343,10 @@ def run_gather_v2(
 
     delays = _default_site_delays(config)
     timeout = float((config.get("http") or {}).get("timeout_sec", 20))
-    excel_every = int(a2.get("excel_every", 40))
-    progress_interval = float(a2.get("progress_interval_sec", 3.0))
-    progress_detail_interval = float(a2.get("progress_detail_interval_sec", 30.0))
+    excel_every = int(a2.get("excel_every", 0))
+    progress_interval = float(a2.get("progress_interval_sec", 30.0))
+    progress_detail_interval = float(a2.get("progress_detail_interval_sec", 120.0))
+    progress_sample_interval = float(a2.get("progress_sample_interval_sec", 2.0))
 
     print("\nApproach 2: starting independent pipelines")
     for s, d in sorted(delays.items()):
@@ -364,8 +381,8 @@ def run_gather_v2(
     wiki_adapt.setdefault("step_rpm", 10.0)
     wiki_adapt.setdefault("success_batch", 8)
     wiki_adapt.setdefault("min_rpm", 5.0)
-    wiki_adapt.setdefault("max_rpm", 200.0 if approach < 3 else 80.0)
-    wiki_adapt.setdefault("max_rpm_parallel", 80.0)
+    wiki_adapt.setdefault("max_rpm", 200.0)
+    wiki_adapt.setdefault("max_rpm_parallel", 120.0)
     wiki_adapt.setdefault("rate_limit_max_attempts", 50)
     # initial RPM from configured delay (e.g. 1.5s → 40 RPM) unless overridden
     if "initial_rpm" not in wiki_adapt:
@@ -375,6 +392,7 @@ def run_gather_v2(
     wiki_lang_workers = approach >= 3 or bool(a2cfg.get("wikipedia_lang_workers", False))
     recoverable_only = approach >= 3 or bool(a2cfg.get("recoverable_only_retry", True))
     smart_progress = approach >= 3 or bool(a2cfg.get("smart_progress", False))
+    workers_per_site = int(a2cfg.get("workers_per_site", 6 if approach >= 3 else 1))
 
     executor = Approach2Executor(
         store,
@@ -389,14 +407,17 @@ def run_gather_v2(
             "approach2_film_total": len(work_items) or a2_film_total,
             "inherit_from_a1": inherit,
             "detail_interval_sec": progress_detail_interval,
+            "sample_interval_sec": progress_sample_interval,
             "smart_progress": smart_progress,
             "approach": approach,
+            "parallel_reporting": True,
         },
         adaptive_sites={"wikipedia": wiki_adapt},
         approach=approach,
         wikipedia_lang_workers=wiki_lang_workers,
         recoverable_only_retry=recoverable_only,
         smart_progress=smart_progress,
+        workers_per_site=workers_per_site,
     )
     print(
         "  wikipedia adaptive RPM: "
@@ -406,10 +427,14 @@ def run_gather_v2(
         f"on 429: cool {wiki_adapt['cool_base_sec']:.0f}s (+"
         f"{wiki_adapt['cool_step_sec']:.0f}s), ROLL BACK to STABLE_RPM"
     )
-    if wiki_lang_workers:
-        print("  wikipedia workers: 3 language pipelines (EN | RU | DE) shared adaptive RPM")
+    print(f"  workers_per_site: {workers_per_site} (each product line: TMDB/OMDb/KP/LB/Wiki)")
+    if wiki_lang_workers and workers_per_site == 3:
+        print("  wikipedia: lang-split EN|RU|DE (because workers_per_site=3)")
+    else:
+        print(f"  wikipedia: {workers_per_site} free workers + shared adaptive RPM")
     print(f"  recoverable_only_retry: {recoverable_only}")
     print(f"  smart_progress: {smart_progress}")
+    print("  reporting: parallel FAST + DETAIL threads (DETAIL does not block pipelines)")
     print(f"  adaptive log → {reports_dir / 'adaptive_rpm_wikipedia.txt'}")
     print(f"  live RPM     → {reports_dir / 'CURRENT_RPM_wikipedia.txt'}")
 

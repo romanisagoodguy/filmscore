@@ -1,9 +1,11 @@
-"""Unified + per-pipeline progress reports for Approach 2.
+"""Unified + per-pipeline progress reports for Approach 2/3.
 
-Performance model:
-  - FAST tick (default 3s): light UNIFIED_REPORT only (counts + adaptive RPM)
-  - DETAIL tick (default 30s): full pipeline_*.txt + WIKI_REPORT (heavy)
-  Never block the fast path on multi-MB wiki dumps.
+Performance model (backyard snapshot):
+  - SAMPLE thread (default ~2s): cheap in-memory snapshot of O(1) status
+    counts, adaptive RPM, completion RPM — never writes large files.
+  - WRITE thread (default 30s): dumps the latest snapshot to UNIFIED_REPORT
+    + pipeline_*_live.txt. Workers are not involved.
+  - DETAIL thread (default 120s): heavy pipeline_*.txt + WIKI_REPORT only.
 """
 
 from __future__ import annotations
@@ -59,9 +61,10 @@ def _fmt_eta(sec: Optional[float]) -> str:
 
 class ProgressReporter:
     """
-    Writes:
-      - reports/UNIFIED_REPORT.txt every few seconds (light dashboard)
-      - pipeline_*.txt + WIKI_REPORT.txt on a slower detail cadence
+    Backyard snapshot model:
+      - sample thread gathers cheap counters into memory
+      - write thread dumps UNIFIED every interval_sec (default 30s)
+      - detail thread builds heavy reports on a slower cadence
     """
 
     def __init__(
@@ -69,9 +72,10 @@ class ProgressReporter:
         store: PlanStore,
         *,
         site_delays: Optional[dict[str, float]] = None,
-        interval_sec: float = 3.0,
-        detail_interval_sec: float = 30.0,
-        film_progress_interval_sec: float = 20.0,
+        interval_sec: float = 30.0,
+        sample_interval_sec: float = 2.0,
+        detail_interval_sec: float = 120.0,
+        film_progress_interval_sec: float = 60.0,
         reports_dir: Optional[str | Path] = None,
         # Overall catalog progress (Approach 1 + 2)
         catalog_total: int = 0,
@@ -80,12 +84,17 @@ class ProgressReporter:
         inherit_from_a1: bool = True,
         smart_progress: bool = False,
         approach: int = 2,
+        parallel_reporting: bool = True,
     ):
         self.store = store
         self.site_delays = site_delays or {}
-        self.interval_sec = max(1.0, float(interval_sec))
+        # Disk write cadence for UNIFIED / live status (from backyard snapshot)
+        self.interval_sec = max(5.0, float(interval_sec))
+        # How often the backyard sampler refreshes the in-memory snapshot
+        self.sample_interval_sec = max(0.5, min(float(sample_interval_sec), self.interval_sec))
+        # DETAIL is expensive on huge plans — default slower than UNIFIED
         self.detail_interval_sec = max(self.interval_sec, float(detail_interval_sec))
-        self.film_progress_interval_sec = max(5.0, float(film_progress_interval_sec))
+        self.film_progress_interval_sec = max(15.0, float(film_progress_interval_sec))
         self.reports_dir = Path(reports_dir or (store.plan_dir / "reports"))
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         self.unified_path = self.reports_dir / "UNIFIED_REPORT.txt"
@@ -95,8 +104,13 @@ class ProgressReporter:
         self.inherit_from_a1 = inherit_from_a1
         self.smart_progress = bool(smart_progress)
         self.approach = int(approach or 2)
+        self.parallel_reporting = bool(parallel_reporting)
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._sample_thread: Optional[threading.Thread] = None
+        self._write_thread: Optional[threading.Thread] = None
+        self._fast_thread: Optional[threading.Thread] = None  # alias of write
+        self._detail_thread: Optional[threading.Thread] = None
+        self._thread: Optional[threading.Thread] = None  # legacy alias
         self._completions: dict[str, deque[float]] = defaultdict(deque)
         self._last_activity: dict[str, str] = {}
         self._last_request_id: dict[str, str] = {}
@@ -109,8 +123,12 @@ class ProgressReporter:
         self._cached_film_prog: Optional[dict[str, Any]] = None
         self._last_write_ms: float = 0.0
         self._last_detail_ms: float = 0.0
+        self._last_sample_ms: float = 0.0
         self._last_error: str = ""
         self._detail_tick_n: int = 0
+        self._detail_busy = threading.Event()  # set while DETAIL running
+        self._snapshot: Optional[dict[str, Any]] = None
+        self._snapshot_mono: float = 0.0
         self._write_bootstrap()
 
     def set_adaptive_snapshot(self, site: str, snap: dict[str, Any]) -> None:
@@ -119,11 +137,12 @@ class ProgressReporter:
 
     def _write_bootstrap(self) -> None:
         note = (
-            "PsychoFilm Approach 2 — reports\n"
+            "PsychoFilm Approach 2/3 — reports\n"
             f"session_started: {self._session_start}\n"
-            f"unified: {self.unified_path}  (FAST every {self.interval_sec:.0f}s)\n"
+            f"unified: {self.unified_path}  (WRITE every {self.interval_sec:.0f}s "
+            f"from backyard snapshot sampled every {self.sample_interval_sec:.0f}s)\n"
             f"detail:  {self.reports_dir}/pipeline_*.txt + WIKI_REPORT.txt  "
-            f"(every {self.detail_interval_sec:.0f}s)\n"
+            f"(every {self.detail_interval_sec:.0f}s, separate thread)\n"
             f"plan: {self.store.jsonl_path}\n"
             f"excel: {self.store.excel_path}\n"
             f"inherit_approach1: {self.inherit_from_a1}\n"
@@ -147,25 +166,141 @@ class ProgressReporter:
                 self._last_request_id[site] = request_id
 
     def start(self) -> None:
-        self._thread = threading.Thread(target=self._loop, name="a2-progress", daemon=True)
-        self._thread.start()
+        if self.parallel_reporting:
+            self._sample_thread = threading.Thread(
+                target=self._sample_loop, name="a2-progress-sample", daemon=True
+            )
+            self._write_thread = threading.Thread(
+                target=self._write_loop, name="a2-progress-write", daemon=True
+            )
+            self._detail_thread = threading.Thread(
+                target=self._detail_loop, name="a2-progress-detail", daemon=True
+            )
+            self._sample_thread.start()
+            self._write_thread.start()
+            self._detail_thread.start()
+            self._fast_thread = self._write_thread
+            self._thread = self._write_thread
+            # Prime one snapshot + one light write so files exist immediately
+            try:
+                self._refresh_snapshot()
+                self.write_once(final=False, force_detail=False, from_snapshot=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("progress bootstrap write failed: %s", exc)
+        else:
+            self._thread = threading.Thread(target=self._loop, name="a2-progress", daemon=True)
+            self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=max(10.0, self.detail_interval_sec + 5))
+        for t in (
+            self._sample_thread,
+            self._write_thread,
+            self._fast_thread,
+            self._detail_thread,
+            self._thread,
+        ):
+            if t and t.is_alive():
+                t.join(timeout=15.0)
         try:
-            self.write_once(final=True, force_detail=True)
+            self._refresh_snapshot(force_film=True)
+            self.write_once(final=True, force_detail=False, from_snapshot=True)
         except Exception as exc:  # noqa: BLE001
             logger.exception("final progress write failed: %s", exc)
 
-    def _loop(self) -> None:
+    def _sample_loop(self) -> None:
+        """Backyard: refresh in-memory snapshot only (no heavy disk reports)."""
+        while not self._stop.wait(self.sample_interval_sec):
+            try:
+                self._refresh_snapshot()
+            except Exception as exc:  # noqa: BLE001
+                self._last_error = f"sample:{type(exc).__name__}: {exc}"
+                logger.exception("progress SAMPLE failed: %s", exc)
+
+    def _write_loop(self) -> None:
+        """Disk write of UNIFIED + live status from latest backyard snapshot."""
         while not self._stop.wait(self.interval_sec):
             try:
-                self.write_once(final=False, force_detail=False)
+                # Ensure snapshot is not ancient if sampler stalled
+                if (
+                    self._snapshot is None
+                    or (time.monotonic() - self._snapshot_mono) > self.interval_sec
+                ):
+                    self._refresh_snapshot()
+                self.write_once(final=False, force_detail=False, from_snapshot=True)
+            except Exception as exc:  # noqa: BLE001
+                self._last_error = f"write:{type(exc).__name__}: {exc}"
+                logger.exception("progress WRITE failed: %s", exc)
+
+    def _detail_loop(self) -> None:
+        """Heavy pipeline_*.txt / WIKI_REPORT — separate thread, skip if still busy."""
+        while not self._stop.wait(self.detail_interval_sec):
+            if self._detail_busy.is_set():
+                logger.warning("progress DETAIL still busy — skip this cycle")
+                continue
+            self._detail_busy.set()
+            try:
+                self._refresh_snapshot(force_film=True)
+                self.write_once(final=False, force_detail=True, from_snapshot=True)
+            except Exception as exc:  # noqa: BLE001
+                self._last_error = f"detail:{type(exc).__name__}: {exc}"
+                logger.exception("progress DETAIL write failed: %s", exc)
+            finally:
+                self._detail_busy.clear()
+
+    def _loop(self) -> None:
+        """Legacy single-thread loop (parallel_reporting=False)."""
+        while not self._stop.wait(self.interval_sec):
+            try:
+                self._refresh_snapshot()
+                self.write_once(final=False, force_detail=False, from_snapshot=True)
             except Exception as exc:  # noqa: BLE001
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 logger.exception("progress write_once failed: %s", exc)
+
+    def _refresh_snapshot(self, *, force_film: bool = False) -> dict[str, Any]:
+        """Gather cheap counters into memory (backyard). O(sites), not O(plan)."""
+        t0 = time.perf_counter()
+        by_site_counts = self.store.counts_by_site_and_status()
+        with self._lock:
+            adaptive = {k: dict(v) for k, v in self._adaptive.items()}
+            completions = {
+                site: float(len(q)) for site, q in self._completions.items()
+            }
+            last_activity = dict(self._last_activity)
+            last_request_id = dict(self._last_request_id)
+        # Film-level scan is rare and cached
+        cat_p = self._overall_gather_progress(force=force_film)
+        req_p = self._request_progress(by_site_counts)
+        # Attach observed RPM from completion deques (last 60s)
+        site_stats: dict[str, PipelineStats] = {}
+        for site, counts in by_site_counts.items():
+            st = self._stats_from_counts(site, counts)
+            site_stats[site] = st
+        snap = {
+            "mono": time.monotonic(),
+            "sampled_at": _now(),
+            "by_site_counts": by_site_counts,
+            "adaptive": adaptive,
+            "completions_rpm": completions,
+            "last_activity": last_activity,
+            "last_request_id": last_request_id,
+            "cat_p": cat_p,
+            "req_p": req_p,
+            "site_stats": site_stats,
+            "wall": time.monotonic() - self._started,
+        }
+        with self._lock:
+            self._snapshot = snap
+            self._snapshot_mono = snap["mono"]
+            self._last_sample_ms = (time.perf_counter() - t0) * 1000.0
+        return snap
+
+    def _get_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            if self._snapshot is not None:
+                return dict(self._snapshot)
+        return self._refresh_snapshot()
 
     def _stats_from_counts(self, site: str, counts: dict[str, int]) -> PipelineStats:
         total = sum(counts.values())
@@ -281,40 +416,22 @@ class ProgressReporter:
         with self._lock:
             rpm_all = float(sum(len(q) for q in self._completions.values()))
 
-        # Approach 3 smart progress: exclude non-accomplishable (terminal) from
-        # "still to do"; % = settled / (settled + still_possible)
+        # Approach 3 smart progress (FAST-safe, O(status counts) — no full plan scan)
+        # success + skipped/failed = settled; deferred+retry ≈ recoverable open;
+        # pending+running = other open.
         smart_pct = None
         accomplishable = total
         terminal_n = 0
         recoverable_open = 0
         if self.smart_progress:
-            from psychofilm_analyzer.gather_v2.errors import classify_for_progress
-
-            success_n = 0
-            other_open = 0
-            for req in self.store.all():
-                bucket = classify_for_progress(
-                    req.status,
-                    deferred_reason=req.deferred_reason or "",
-                    error=req.error or "",
-                    http_status=req.http_status,
-                )
-                if bucket == "success":
-                    success_n += 1
-                elif bucket == "terminal":
-                    terminal_n += 1
-                elif bucket == "recoverable_open":
-                    recoverable_open += 1
-                else:
-                    other_open += 1
+            success_n = all_c.get(STATUS_SUCCESS, 0)
+            terminal_n = all_c.get(STATUS_FAILED, 0) + all_c.get(STATUS_SKIPPED, 0)
+            recoverable_open = all_c.get(STATUS_DEFERRED, 0) + all_c.get(STATUS_RETRY, 0)
+            other_open = all_c.get(STATUS_PENDING, 0) + all_c.get(STATUS_RUNNING, 0)
             settled = success_n + terminal_n
             still = recoverable_open + other_open
-            accomplishable = settled + still  # = total when all classified
-            # Denominator drops terminal from "impossible remaining" already settled
-            # User: % based on total minus cannot-accomplish → settled/accomplishable
-            # where cannot-accomplish are terminal and already in settled.
-            smart_pct = _pct(settled, max(1, accomplishable))
-            # For ETA use only still-possible open work
+            accomplishable = max(1, settled + still)
+            smart_pct = _pct(settled, accomplishable)
             pending = still
             done = settled
 
@@ -330,7 +447,9 @@ class ProgressReporter:
             "retry": all_c.get(STATUS_RETRY, 0),
             "deferred": all_c.get(STATUS_DEFERRED, 0),
             "pct": smart_pct if smart_pct is not None else _pct(done, total),
-            "pct_mode": "smart_accomplishable" if self.smart_progress else "raw",
+            "pct_mode": (
+                "smart_accomplishable_counts" if self.smart_progress else "raw"
+            ),
             "terminal_settled": terminal_n,
             "recoverable_open": recoverable_open,
             "accomplishable": accomplishable,
@@ -491,54 +610,53 @@ class ProgressReporter:
             rpm=float(st.rpm or 0.0),
         )
 
-    def write_once(self, *, final: bool = False, force_detail: bool = False) -> None:
+    def write_once(
+        self,
+        *,
+        final: bool = False,
+        force_detail: bool = False,
+        from_snapshot: bool = True,
+    ) -> None:
         """
-        FAST path (every interval_sec): light UNIFIED_REPORT only.
-        DETAIL path (every detail_interval_sec or final): heavy per-site + WIKI_REPORT.
+        WRITE path (default every 30s): UNIFIED from backyard snapshot.
+        DETAIL path (default every 120s or final): heavy per-site + WIKI_REPORT.
         """
         t0 = time.perf_counter()
         now = time.monotonic()
-        # First real tick after start should still be FAST; detail only on timer
-        # or final. Bootstrap sets _last_detail_mono=0 so treat 0 as "never done".
-        if self._last_detail_mono <= 0:
-            do_detail = bool(final or force_detail)
+        if final or force_detail:
+            do_detail = True
+        elif getattr(self, "parallel_reporting", False):
+            do_detail = False
         else:
-            do_detail = bool(
-                final
-                or force_detail
-                or (now - self._last_detail_mono) >= self.detail_interval_sec
-            )
+            do_detail = (now - self._last_detail_mono) >= self.detail_interval_sec
 
-        by_site_counts = self.store.counts_by_site_and_status()
-        sites = list(by_site_counts.keys()) or self.store.sites()
-        wall = now - self._started
-        req_p = self._request_progress(by_site_counts)
-        # Film-level full scan is expensive — only on detail/final (then cached)
-        if do_detail or final or self._cached_film_prog is not None:
-            cat_p = self._overall_gather_progress(force=final or do_detail)
+        if from_snapshot:
+            snap = self._get_snapshot()
+            by_site_counts = snap.get("by_site_counts") or {}
+            cat_p = snap.get("cat_p") or {}
+            req_p = snap.get("req_p") or self._request_progress(by_site_counts)
+            wall = float(snap.get("wall") or (now - self._started))
+            sampled_at = snap.get("sampled_at") or _now()
+            sample_ms = self._last_sample_ms
         else:
-            a2_total = self.approach2_film_total or 0
-            cat_total = self.catalog_total or (self.approach1_done + a2_total)
-            cat_p = {
-                "catalog_total": cat_total,
-                "approach1_done": self.approach1_done,
-                "approach2_film_total": a2_total,
-                "approach2_films_done": 0,
-                "approach2_films_partial": 0,
-                "approach2_films_pending": a2_total,
-                "catalog_done": self.approach1_done,
-                "catalog_remaining": max(0, cat_total - self.approach1_done),
-                "catalog_pct": _pct(self.approach1_done, cat_total),
-                "approach2_pct": 0.0,
-            }
+            by_site_counts = self.store.counts_by_site_and_status()
+            req_p = self._request_progress(by_site_counts)
+            cat_p = self._overall_gather_progress(force=final or do_detail)
+            wall = now - self._started
+            sampled_at = _now()
+            sample_ms = 0.0
+
+        sites = list(by_site_counts.keys()) or self.store.sites()
 
         lines: list[str] = [
             "PsychoFilm UNIFIED REPORT — Approach 2 gather",
             f"updated: {_now()}  wall={wall:.0f}s  {'FINAL' if final else 'live'}",
             f"session_started: {self._session_start}",
-            f"refresh: FAST every {self.interval_sec:.0f}s  |  "
+            f"refresh: WRITE every {self.interval_sec:.0f}s from backyard snapshot "
+            f"(sample every {self.sample_interval_sec:.0f}s)  |  "
             f"DETAIL every {self.detail_interval_sec:.0f}s  "
-            f"(this write: {'DETAIL' if do_detail else 'FAST'})",
+            f"(this write: {'DETAIL' if do_detail else 'SNAPSHOT'})",
+            f"snapshot_at: {sampled_at}  sample_ms={sample_ms:.0f}",
             f"last_write_ms={self._last_write_ms:.0f}  "
             f"last_detail_ms={self._last_detail_ms:.0f}"
             + (f"  last_error={self._last_error}" if self._last_error else ""),
@@ -663,14 +781,20 @@ class ProgressReporter:
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("pipeline report %s failed: %s", site, exc)
                     self._last_error = f"pipeline_{site}: {type(exc).__name__}: {exc}"
-            # Full plan Excel is expensive; only every 3rd DETAIL tick (or final)
-            if final or (self._detail_tick_n % 3 == 0):
+            # Plan Excel is VERY expensive on 100k+ rows — never every DETAIL.
+            # Only on final, or every 10th DETAIL (~ every detail_interval*10).
+            if final or (self._detail_tick_n % 10 == 0 and self._detail_tick_n > 0):
                 try:
                     self.store.write_excel_and_csv()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("plan excel export on detail tick failed: %s", exc)
             self._last_detail_mono = time.monotonic()
             self._last_detail_ms = (time.perf_counter() - t_detail) * 1000.0
+            if self._last_detail_ms > 5000:
+                logger.warning(
+                    "UNIFIED_REPORT DETAIL write slow: %.0f ms (workers keep running)",
+                    self._last_detail_ms,
+                )
         elif self._last_detail_mono <= 0:
             # Mark so subsequent FAST ticks stay FAST until detail interval
             self._last_detail_mono = time.monotonic()
@@ -719,14 +843,15 @@ class ProgressReporter:
             "",
             "=" * 72,
             "FILES (all pipelines — not wiki-only)",
-            f"  unified:      {self.unified_path}  (FAST every {self.interval_sec:.0f}s)",
-            f"  live status:  {self.reports_dir}/pipeline_*_live.txt  (FAST, every site)",
+            f"  unified:      {self.unified_path}  (WRITE every {self.interval_sec:.0f}s "
+            f"from backyard snapshot; sample every {self.sample_interval_sec:.0f}s)",
+            f"  live status:  {self.reports_dir}/pipeline_*_live.txt  (same WRITE cadence)",
             f"  full reports: {self.reports_dir}/pipeline_*.txt  (DETAIL every "
-            f"{self.detail_interval_sec:.0f}s, every site)",
+            f"{self.detail_interval_sec:.0f}s, separate thread)",
             f"  wiki_report:  {self.reports_dir / 'WIKI_REPORT.txt'}  (DETAIL)",
             f"  site errors:  {self.reports_dir}/{{tmdb,omdb,kinopoisk,letterboxd}}_ERROR_COMMANDS.txt",
             f"  current_rpm:  {self.reports_dir / 'CURRENT_RPM_wikipedia.txt'}  (live)",
-            f"  plan export:  {self.store.excel_path}  (DETAIL + excel_every)",
+            f"  plan export:  {self.store.excel_path}  (rare DETAIL only; not on hot path)",
             f"  profiles:     output/profile_a2_live.xlsx  (all sources merged)",
             "=" * 72,
             "",
@@ -735,7 +860,7 @@ class ProgressReporter:
         text = "\n".join(lines)
         self.unified_path.write_text(text, encoding="utf-8")
         self._last_write_ms = (time.perf_counter() - t0) * 1000.0
-        if self._last_write_ms > 2000:
+        if self._last_write_ms > 5000:
             logger.warning(
                 "UNIFIED_REPORT write slow: %.0f ms (detail=%s)",
                 self._last_write_ms,

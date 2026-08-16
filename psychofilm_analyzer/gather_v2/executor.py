@@ -18,6 +18,7 @@ from psychofilm_analyzer.gather_v2.errors import (
     normalize_reason,
 )
 from psychofilm_analyzer.gather_v2.models import (
+    BLOCKING_DONE,
     OPEN_WORK,
     STATUS_DEFERRED,
     STATUS_FAILED,
@@ -31,6 +32,7 @@ from psychofilm_analyzer.gather_v2.models import (
 from psychofilm_analyzer.gather_v2.plan_store import PlanStore
 from psychofilm_analyzer.gather_v2.progress import ProgressReporter
 from psychofilm_analyzer.gather_v2.resolver import deps_ready, resolve_request
+from psychofilm_analyzer.gather_v2.worker_assign import assign_site_queues
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +114,8 @@ class SitePipeline(threading.Thread):
         # Shared cool-down map for multi-worker wikipedia (request_id -> mono)
         shared_not_before: Optional[dict[str, float]] = None,
         shared_not_before_lock: Optional[threading.Lock] = None,
+        # Fixed queue assigned once before start (request_ids in process order)
+        fixed_queue: Optional[list[str]] = None,
     ):
         wid = f"-w{worker_id}" if worker_id else ""
         suf = endpoint_suffix or ""
@@ -134,80 +138,204 @@ class SitePipeline(threading.Thread):
         self._done = 0
         self._last_req = 0.0
         self._cmd_log_lock = threading.Lock()
-        # request_id -> monotonic time when it may be claimed again (after 429/park)
+        # request_id -> monotonic time when it may be tried again (after 429/park)
         self._not_before_lock = shared_not_before_lock or threading.Lock()
         self._not_before: dict[str, float] = (
             shared_not_before if shared_not_before is not None else {}
         )
-        # round-robin so one bad request does not monopolize the queue
+        # Fixed list known 100% before work begins (no mid-run global sort/claim)
+        self.fixed_queue: list[str] = list(fixed_queue or [])
         self._claim_offset = int(worker_id or 0)
 
     def run(self) -> None:
+        n_q = len(self.fixed_queue)
         if self.adaptive:
             logger.info(
-                "Pipeline %s started ADAPTIVE rpm=%.3f delay=%.2fs "
-                "(bad requests are parked; queue continues)",
+                "Pipeline %s w%s FIXED queue=%s ADAPTIVE rpm=%.3f delay=%.2fs",
                 self.site,
+                self.worker_id,
+                n_q,
                 self.adaptive.current_rpm(),
                 self.adaptive.current_delay_sec(),
             )
         else:
             logger.info(
-                "Pipeline %s started (delay=%.2fs; bad requests do not block others)",
+                "Pipeline %s w%s FIXED queue=%s delay=%.2fs",
                 self.site,
+                self.worker_id,
+                n_q,
                 self.delay_sec,
             )
-        idle_rounds = 0
-        end_queue_announced = False
-        while not self.stop_event.is_set():
-            req = self._claim_next()
-            if req is None:
-                idle_rounds += 1
-                counts = self.store.counts_by_status(self.site)
-                left = sum(counts.get(s, 0) for s in OPEN_WORK)
-                if left == 0:
-                    logger.info("Pipeline %s finished (no work left)", self.site)
+
+        # Phase 1: walk the pre-assigned main list once (order fixed).
+        # Phase 2: process this worker's local end-queue (deferred / wait-deps).
+        local_end: list[str] = []
+        wait_deps_n: dict[str, int] = {}
+        for rid in self.fixed_queue:
+            if self.stop_event.is_set():
+                break
+            outcome = self._process_one(rid, phase="main")
+            if outcome in ("defer_local", "wait_deps"):
+                local_end.append(rid)
+
+        if local_end and not self.stop_event.is_set():
+            logger.info(
+                "[%s] w%s MAIN done — local end-queue n=%s",
+                self.site,
+                self.worker_id,
+                len(local_end),
+            )
+
+        # Phase 2: local end-queue only (no global re-sort)
+        rounds = 0
+        while local_end and not self.stop_event.is_set() and rounds < 50_000:
+            rounds += 1
+            rid = local_end.pop(0)
+            wait = self._seconds_until_unpark(rid)
+            if wait > 0:
+                self.stop_event.wait(min(wait + 0.05, 30.0))
+                if self.stop_event.is_set():
                     break
-                # Main queue empty but deferred/retry remain?
-                main_left = counts.get(STATUS_PENDING, 0) + counts.get(STATUS_RUNNING, 0)
-                end_left = counts.get(STATUS_DEFERRED, 0) + counts.get(STATUS_RETRY, 0)
-                if main_left == 0 and end_left > 0 and not end_queue_announced:
-                    logger.info(
-                        "[%s] MAIN queue empty — processing %s deferred/failing requests at END",
-                        self.site,
-                        end_left,
+            outcome = self._process_one(rid, phase="end")
+            if outcome == "defer_local":
+                local_end.append(rid)
+            elif outcome == "wait_deps":
+                wait_deps_n[rid] = wait_deps_n.get(rid, 0) + 1
+                if wait_deps_n[rid] > 200:
+                    # Parent never finished (cross-site or terminal gap) — skip
+                    self.store.update_fields(
+                        rid,
+                        worker_id=self.worker_id,
+                        status=STATUS_SKIPPED,
+                        error="wait_deps exceeded — dependency not finished",
+                        deferred_reason="dependency_timeout",
+                        finished_at=_now(),
                     )
-                    end_queue_announced = True
-                wait_for = self._seconds_until_next_claimable()
-                if wait_for is not None and wait_for > 0:
-                    logger.info(
-                        "[%s] end-queue cooling — wait %.1fs then retry deferred",
-                        self.site,
-                        wait_for,
-                    )
-                    self.stop_event.wait(min(wait_for + 0.05, 30.0))
-                else:
-                    self.stop_event.wait(0.25 if idle_rounds < 20 else 1.0)
-                continue
-            idle_rounds = 0
-            self._throttle()
-            self._execute(req)
-            self._done += 1
-            if self.progress:
-                self.progress.note_completion(
-                    self.site, request_id=getattr(req, "request_id", "") or ""
+                    self._note_done(self.store.get(rid) or PlanRequest(request_id=rid, film_index=0))
+                    continue
+                local_end.append(rid)
+                # yield so parent pipelines (other sites) can finish
+                self.stop_event.wait(0.1)
+
+        logger.info(
+            "Pipeline %s w%s stopped done=%s queue_was=%s",
+            self.site,
+            self.worker_id,
+            self._done,
+            n_q,
+        )
+
+    def _process_one(self, request_id: str, *, phase: str) -> str:
+        """
+        Process one fixed request id.
+
+        Returns:
+          'done' | 'skip' | 'defer_local' | 'wait_deps'
+        """
+        req = self.store.get(request_id)
+        if not req:
+            return "skip"
+        if req.status in BLOCKING_DONE:
+            return "skip"
+        if req.status == STATUS_RUNNING:
+            # Interrupted mid-flight from a prior process — treat as open
+            pass
+        elif req.status not in (STATUS_PENDING, STATUS_DEFERRED, STATUS_RETRY, STATUS_RUNNING):
+            return "skip"
+
+        if self._is_parked(request_id):
+            return "defer_local"
+
+        if not deps_ready(self.store, req):
+            return "wait_deps"
+
+        ok, err = resolve_request(self.store, req)
+        if not ok:
+            if "not finished" in (err or ""):
+                return "wait_deps"
+            if "dependency" in (err or "") and "failed" in (err or ""):
+                self.store.update_fields(
+                    req.request_id,
+                    worker_id=self.worker_id,
+                    status=STATUS_SKIPPED,
+                    error=err,
+                    deferred_reason="dependency_failed",
+                    finished_at=_now(),
                 )
-                if self.adaptive and hasattr(self.progress, "set_adaptive_snapshot"):
-                    try:
-                        self.progress.set_adaptive_snapshot(self.site, self.adaptive.snapshot())
-                    except Exception:
-                        pass
-            if self.excel_every and self._done % self.excel_every == 0:
+                self._note_done(req)
+                return "done"
+            if "earlier letterboxd" in (err or ""):
+                self.store.update_fields(
+                    req.request_id,
+                    worker_id=self.worker_id,
+                    status=STATUS_SKIPPED,
+                    error=err,
+                    deferred_reason="not_found",
+                    finished_at=_now(),
+                )
+                self._note_done(req)
+                return "done"
+            if "empty" in (err or "") or "no " in (err or ""):
+                self.store.update_fields(
+                    req.request_id,
+                    worker_id=self.worker_id,
+                    status=STATUS_SKIPPED,
+                    error=err,
+                    finished_at=_now(),
+                )
+                self._note_done(req)
+                return "done"
+            self.store.update_fields(
+                req.request_id,
+                worker_id=self.worker_id,
+                status=STATUS_SKIPPED,
+                error=err,
+                finished_at=_now(),
+            )
+            self._note_done(req)
+            return "done"
+
+        # Mark running (append event; no global claim race — this id is ours only)
+        self.store.update_fields(
+            req.request_id,
+            worker_id=self.worker_id,
+            status=STATUS_RUNNING,
+            started_at=_now(),
+            url=req.url,
+            params_json=req.params_json,
+            attempts=int(req.attempts or 0) + 1,
+        )
+        # refresh after update
+        req = self.store.get(request_id) or req
+
+        self._throttle()
+        self._execute(req)
+        self._done += 1
+        self._note_done(req)
+
+        # If execute deferred this request, keep it on local end-queue
+        fresh = self.store.get(request_id)
+        if fresh and fresh.status in (STATUS_DEFERRED, STATUS_RETRY):
+            return "defer_local"
+        return "done"
+
+    def _note_done(self, req: PlanRequest) -> None:
+        if self.progress:
+            self.progress.note_completion(
+                self.site, request_id=getattr(req, "request_id", "") or ""
+            )
+            if self.adaptive and hasattr(self.progress, "set_adaptive_snapshot"):
                 try:
-                    self.store.write_excel_and_csv()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("plan excel write failed: %s", exc)
-        logger.info("Pipeline %s stopped", self.site)
+                    self.progress.set_adaptive_snapshot(
+                        self.site, self.adaptive.snapshot()
+                    )
+                except Exception:
+                    pass
+        if self.excel_every and self._done % self.excel_every == 0:
+            try:
+                self.store.write_excel_and_csv()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("plan excel write failed: %s", exc)
 
     def _throttle(self) -> None:
         if self.adaptive:
@@ -959,7 +1087,9 @@ class SitePipeline(threading.Thread):
             return
 
         # not_found / disambiguation / empty after full search → terminal skip
-        # (retrying the same bad titles will not help; search already ran)
+        # (retrying the same bad titles will not help; search already ran).
+        # Rate health: durable not_found proves Wikipedia answered — count toward
+        # adaptive climb (do NOT reset success_streak; that was blocking RPM).
         self.store.update_fields(
             req.request_id,
             status=STATUS_SKIPPED,
@@ -978,7 +1108,12 @@ class SitePipeline(threading.Thread):
             attempts_payload=payload,
         )
         if self.adaptive:
-            self.adaptive.on_other_result(ok=False, request_id=req.request_id)
+            # Count as rate-OK so CURRENT_RPM can climb when there are no 429s
+            self.adaptive.on_success(request_id=req.request_id)
+            if self.progress and hasattr(self.progress, "set_adaptive_snapshot"):
+                self.progress.set_adaptive_snapshot(
+                    self.site, self.adaptive.snapshot()
+                )
         logger.info(
             "[wikipedia] %s %s steps=%s",
             cls,
@@ -1272,8 +1407,8 @@ class Approach2Executor:
         *,
         site_delays: dict[str, float],
         timeout_sec: float = 20.0,
-        progress_interval_sec: float = 3.0,
-        excel_every: int = 50,
+        progress_interval_sec: float = 30.0,
+        excel_every: int = 0,
         progress_kwargs: Optional[dict] = None,
         adaptive_sites: Optional[dict[str, dict[str, Any]]] = None,
         # Approach 3 options
@@ -1281,6 +1416,7 @@ class Approach2Executor:
         wikipedia_lang_workers: bool = False,
         recoverable_only_retry: bool = True,
         smart_progress: bool = False,
+        workers_per_site: int = 1,
     ):
         self.store = store
         self.site_delays = site_delays
@@ -1290,10 +1426,15 @@ class Approach2Executor:
         self.approach = int(approach or 2)
         self.wikipedia_lang_workers = bool(wikipedia_lang_workers) or self.approach >= 3
         self.recoverable_only_retry = bool(recoverable_only_retry)
+        # Approach 3 default: 6 workers per product line (site)
+        default_workers = 6 if self.approach >= 3 else 1
+        self.workers_per_site = max(1, int(workers_per_site or default_workers))
         self.stop_event = threading.Event()
         pk = dict(progress_kwargs or {})
         pk.setdefault("smart_progress", smart_progress or self.approach >= 3)
         pk.setdefault("approach", self.approach)
+        # Large plans: reporting must not block pipelines
+        pk.setdefault("parallel_reporting", True)
         self.progress = ProgressReporter(
             store,
             site_delays=site_delays,
@@ -1302,9 +1443,15 @@ class Approach2Executor:
         )
         self.pipelines: list[SitePipeline] = []
         self.adaptive_controllers: dict[str, AdaptiveRpmController] = {}
-        # Shared cool map for all wiki language workers
-        self._wiki_not_before: dict[str, float] = {}
-        self._wiki_not_before_lock = threading.Lock()
+        # Shared cool maps per site (all workers of that product line)
+        self._site_not_before: dict[str, dict[str, float]] = {}
+        self._site_not_before_lock: dict[str, threading.Lock] = {}
+
+    def _shared_park(self, site: str) -> tuple[dict[str, float], threading.Lock]:
+        if site not in self._site_not_before:
+            self._site_not_before[site] = {}
+            self._site_not_before_lock[site] = threading.Lock()
+        return self._site_not_before[site], self._site_not_before_lock[site]
 
     def run(self) -> None:
         sites = self.store.sites()
@@ -1326,10 +1473,10 @@ class Approach2Executor:
                     acfg.get("initial_rpm")
                     or AdaptiveRpmController.delay_to_rpm(delay)
                 )
-                # Approach 3: shared max_rpm default 80 for multi-worker safety
                 max_rpm = float(acfg.get("max_rpm", 200.0))
-                if self.wikipedia_lang_workers and max_rpm > 100:
-                    max_rpm = float(acfg.get("max_rpm_parallel", 80.0))
+                # Multi-worker: keep shared cap reasonable unless config sets max_rpm_parallel
+                if self.workers_per_site > 1 or self.wikipedia_lang_workers:
+                    max_rpm = float(acfg.get("max_rpm_parallel", min(max_rpm, 120.0)))
                 adaptive = AdaptiveRpmController(
                     site,
                     initial_rpm=min(initial_rpm, max_rpm),
@@ -1356,10 +1503,31 @@ class Approach2Executor:
                 if site == "wikipedia"
                 else reports_dir / f"{site}_ERROR_COMMANDS.txt"
             )
+            park_map, park_lock = self._shared_park(site)
 
-            if site == "wikipedia" and self.wikipedia_lang_workers:
-                # Three language workers: EN / RU / DE — shared adaptive RPM
-                for i, suf in enumerate(("_en", "_ru", "_de")):
+            # Product line: N workers with FIXED queues assigned once (no mid-run sort/claim).
+            # Partition: film_index % N so deps stay on the same worker.
+            # Wikipedia: if exactly 3 workers + lang mode, pin EN/RU/DE; else free film partition.
+            n_workers = self.workers_per_site
+            use_lang_split = (
+                site == "wikipedia"
+                and self.wikipedia_lang_workers
+                and n_workers == 3
+            )
+            lang_suffixes = ("_en", "_ru", "_de")
+            qdir = self.store.worker_queues_dir
+
+            if use_lang_split:
+                # One fixed queue per language worker (still sorted once each)
+                for i in range(n_workers):
+                    suf = lang_suffixes[i]
+                    queues = assign_site_queues(
+                        self.store,
+                        site,
+                        1,
+                        endpoint_suffix=suf,
+                        write_dir=qdir,
+                    )
                     p = SitePipeline(
                         site,
                         self.store,
@@ -1367,39 +1535,58 @@ class Approach2Executor:
                         timeout_sec=self.timeout_sec,
                         progress=self.progress,
                         stop_event=self.stop_event,
-                        excel_every=self.excel_every,
+                        excel_every=self.excel_every if i == 0 else 0,
                         adaptive=adaptive,
                         rate_limit_max_attempts=rate_max,
                         error_commands_path=err_path,
                         worker_id=i + 1,
                         endpoint_suffix=suf,
                         recoverable_only_retry=self.recoverable_only_retry,
-                        shared_not_before=self._wiki_not_before,
-                        shared_not_before_lock=self._wiki_not_before_lock,
+                        shared_not_before=park_map,
+                        shared_not_before_lock=park_lock,
+                        fixed_queue=queues[0],
                     )
                     self.pipelines.append(p)
                     p.start()
-                    logger.info(
-                        "Wikipedia lang worker %s started (filter=%s) shared adaptive",
-                        i + 1,
-                        suf,
-                    )
-            else:
-                p = SitePipeline(
+                logger.info(
+                    "[%s] started %s workers FIXED queues (lang-split EN|RU|DE)",
                     site,
-                    self.store,
-                    delay_sec=delay,
-                    timeout_sec=self.timeout_sec,
-                    progress=self.progress,
-                    stop_event=self.stop_event,
-                    excel_every=self.excel_every,
-                    adaptive=adaptive,
-                    rate_limit_max_attempts=rate_max,
-                    error_commands_path=err_path,
-                    recoverable_only_retry=self.recoverable_only_retry,
+                    n_workers,
                 )
-                self.pipelines.append(p)
-                p.start()
+            else:
+                queues = assign_site_queues(
+                    self.store,
+                    site,
+                    n_workers,
+                    write_dir=qdir,
+                )
+                for i in range(n_workers):
+                    p = SitePipeline(
+                        site,
+                        self.store,
+                        delay_sec=delay,
+                        timeout_sec=self.timeout_sec,
+                        progress=self.progress,
+                        stop_event=self.stop_event,
+                        excel_every=self.excel_every if i == 0 else 0,
+                        adaptive=adaptive,
+                        rate_limit_max_attempts=rate_max,
+                        error_commands_path=err_path,
+                        worker_id=i + 1,
+                        endpoint_suffix=None,
+                        recoverable_only_retry=self.recoverable_only_retry,
+                        shared_not_before=park_map,
+                        shared_not_before_lock=park_lock,
+                        fixed_queue=queues[i],
+                    )
+                    self.pipelines.append(p)
+                    p.start()
+                logger.info(
+                    "[%s] started %s workers FIXED queues (film_index %% %s, sorted once)",
+                    site,
+                    n_workers,
+                    n_workers,
+                )
         try:
             for p in self.pipelines:
                 p.join()

@@ -109,9 +109,9 @@ class ProfileSnapshotWriter:
 
     def start(self, *, write_immediately: bool = True) -> None:
         if write_immediately:
-            # short delay so pipelines can claim first requests
+            # Delay first snapshot so pipelines are not starved by Excel on huge catalogs
             def _first() -> None:
-                if not self._stop.wait(5.0):
+                if not self._stop.wait(180.0):
                     self.write_once(reason="startup")
 
             threading.Thread(target=_first, name="a2-profile-snap-first", daemon=True).start()
