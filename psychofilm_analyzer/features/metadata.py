@@ -209,8 +209,10 @@ def assemble_metadata(result: EnrichedResult, item: InputTitle, sources: dict[st
     # --- Plots / overviews ---
     plot_en = None
     plot_ru = None
+    plot_de = None
     overview_en = None
     overview_ru = None
+    overview_de = None
     if omdb and omdb.found:
         plot_en = omdb.plot_en or omdb.plot or omdb.overview
         overview_en = omdb.overview_en or omdb.overview or plot_en
@@ -225,27 +227,33 @@ def assemble_metadata(result: EnrichedResult, item: InputTitle, sources: dict[st
         if not plot_en and kp.plot_en:
             plot_en = kp.plot_en
     if wiki and wiki.found:
-        # Wikipedia extracts: prefer by language
         langs = (wiki.extra or {}).get("langs") or []
         page_titles = (wiki.extra or {}).get("page_titles") or {}
-        links = (wiki.extra or {}).get("links") or []
-        combined = wiki.extra.get("combined_text") or ""
-        if "en" in langs or (wiki.language == "en"):
-            overview_en = overview_en or wiki.overview
-            plot_en = plot_en or wiki.plot or wiki.overview
-        if "ru" in langs:
-            # pull russian chunk if present
-            m = re.search(r"\[ru\]\s*(.+?)(?:\n\n\[|$)", combined, flags=re.S)
-            if m:
-                ru_text = m.group(1).strip()
-                overview_ru = overview_ru or ru_text[:2000]
-                plot_ru = plot_ru or ru_text[:1500]
-        _ = page_titles, links  # used in links section
+        extra = wiki.extra or {}
+        if wiki.overview_en or "en" in langs or wiki.language == "en":
+            overview_en = overview_en or wiki.overview_en or wiki.overview
+            plot_en = plot_en or wiki.plot_en or wiki.overview_en or wiki.overview
+        if wiki.overview_ru or "ru" in langs:
+            overview_ru = overview_ru or wiki.overview_ru
+            plot_ru = plot_ru or wiki.plot_ru or wiki.overview_ru
+            if not overview_ru:
+                m = re.search(r"\[ru\]\s*(.+?)(?:\n\n\[|$)", extra.get("combined_text") or "", flags=re.S)
+                if m:
+                    ru_text = m.group(1).strip()
+                    overview_ru = ru_text[:4000]
+                    plot_ru = plot_ru or ru_text[:4000]
+        de_text = wiki.overview_de or extra.get("overview_de") or wiki.plot_de
+        if de_text or "de" in langs:
+            overview_de = overview_de or de_text
+            plot_de = plot_de or wiki.plot_de or de_text
+        _ = page_titles
 
     result.plot_en = plot_en
     result.plot_ru = plot_ru
+    result.plot_de = plot_de
     result.overview_en = overview_en or plot_en
     result.overview_ru = overview_ru or plot_ru
+    result.overview_de = overview_de or plot_de
 
     # --- Genres (extensive: ALL sources; EN/RU are splits, not replacements) ---
     from psychofilm_analyzer.features.text_aggregate import all_genre_like_terms, all_genres

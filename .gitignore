@@ -8,4 +8,5 @@ venv/
 cache/
 output/
 *.log
+*.tmp
 .DS_Store

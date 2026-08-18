@@ -100,9 +100,11 @@ class SourcePayload:
     overview: Optional[str] = None
     overview_en: Optional[str] = None
     overview_ru: Optional[str] = None
+    overview_de: Optional[str] = None
     plot: Optional[str] = None
     plot_en: Optional[str] = None
     plot_ru: Optional[str] = None
+    plot_de: Optional[str] = None
     genres: list[str] = field(default_factory=list)
     genres_en: list[str] = field(default_factory=list)
     genres_ru: list[str] = field(default_factory=list)
@@ -197,8 +199,10 @@ class EnrichedResult:
     # Plots / overviews (language-separated)
     plot_en: Optional[str] = None
     plot_ru: Optional[str] = None
+    plot_de: Optional[str] = None
     overview_en: Optional[str] = None
     overview_ru: Optional[str] = None
+    overview_de: Optional[str] = None
 
     # Genres / keywords
     genres: list[str] = field(default_factory=list)
@@ -346,8 +350,8 @@ class EnrichedResult:
             "media_type": self.media_type,
             "runtime_min": self.runtime_min,
             "countries": {"en": self.countries_en, "ru": self.countries_ru, "all": self.countries},
-            "plots": {"en": self.plot_en, "ru": self.plot_ru},
-            "overviews": {"en": self.overview_en, "ru": self.overview_ru},
+            "plots": {"en": self.plot_en, "ru": self.plot_ru, "de": getattr(self, "plot_de", None)},
+            "overviews": {"en": self.overview_en, "ru": self.overview_ru, "de": getattr(self, "overview_de", None)},
             "genres": {"en": self.genres_en, "ru": self.genres_ru, "all": self.genres},
             "keywords": self.keywords,
             "crew": {

@@ -1,0 +1,37 @@
+# Approach 3 gather for the Jellyfin Deen library.
+# Overlay on config/default.yaml — Wikipedia held at 50 RPM.
+
+http:
+  host_rate_limits_per_min:
+    wikipedia.org: 50
+
+sources:
+  tmdb: true
+  omdb: true
+  kinopoisk: true
+  wikipedia: true
+  letterboxd: true
+
+gather:
+  approach: 3
+
+gather_v2:
+  inherit_approach1: false
+  include_wikipedia: true
+  wikipedia_langs: [en, ru, de]
+  wikipedia_lang_workers: true
+  recoverable_only_retry: true
+  smart_progress: true
+  workers_per_site: 6
+  site_delays_sec:
+    wikipedia: 1.2          # 60 / 50 RPM
+  wikipedia_adaptive_rpm:
+    initial_rpm: 50.0
+    min_rpm: 5.0
+    max_rpm: 50.0
+    max_rpm_parallel: 50.0
+    step_rpm: 10.0
+    success_batch: 8
+    cool_base_sec: 30
+    cool_step_sec: 15
+    rate_limit_max_attempts: 50

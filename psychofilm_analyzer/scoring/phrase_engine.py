@@ -17,6 +17,7 @@ class PhraseHit:
     tier: int
     weight: float
     count: int
+    lexicon: str = ""  # "de" when the phrase is from the German pack
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -27,6 +28,7 @@ class PhraseHit:
             "tier": self.tier,
             "weight": round(self.weight, 3),
             "count": self.count,
+            "lexicon": self.lexicon,
         }
 
 
@@ -50,6 +52,130 @@ class ScoreResult:
 
 
 TIER_WEIGHT = {1: 1.0, 2: 2.0, 3: 3.0}
+
+_CYR_RE = re.compile(r"[а-яё]", re.I)
+_DE_CHAR_RE = re.compile(r"[äöüß]")
+
+
+def _phrase_pattern(phrase: str) -> tuple[str, bool]:
+    """Return (regex, is_cyrillic_stem).
+
+    Cyrillic stems stay substring (сем/миф). Latin always uses word
+    boundaries so 'war'/'son' cannot fire inside German words.
+    """
+    has_cyr = bool(_CYR_RE.search(phrase))
+    if has_cyr:
+        return re.escape(phrase), True
+    return rf"(?<!\w){re.escape(phrase)}(?!\w)", False
+
+
+# Award/festival tokens that may appear on a DE wiki lead but are not psych evidence.
+AWARD_TOKENS_ON_DE = {
+    "oscar",
+    "oscars",
+    "academy award",
+    "academy awards",
+    "bafta",
+    "emmy",
+    "cannes",
+    "berlinale",
+    "venice",
+    "cesar",
+    "golden globe",
+    "golden bear",
+    "goldener bär",
+    "goldener baer",
+    "goldener löwe",
+    "goldener loewe",
+    "goldene palme",
+    "palme d'or",
+}
+
+# Genre/loanwords that fire on encyclopedia leads and must not drive psych scores.
+GENRE_LOANWORDS_ON_DE = {
+    "science",
+    "fantasy",
+    "mystery",
+    "thriller",
+    "cinematic",
+    "revolution",
+    "animation",
+    "comedy",
+    "drama",
+    "action",
+    "horror",
+    "adventure",
+    "romance",
+    "documentary",
+    "western",
+    "musical",
+}
+
+# High-frequency DE-wiki lead words. Real German, but not psych evidence.
+DE_ENCYCLOPEDIA_GENERIC = {
+    "vergangenheit",
+    "geschichte",
+    "regisseur",
+    "drehbuch",
+    "drehbuchautor",
+    "darsteller",
+    "hauptdarsteller",
+    "premiere",
+    "aufführung",
+    "auffuehrung",
+    "kinostart",
+    "filmkritik",
+    "filmpreis",
+    "auszeichnung",
+}
+
+
+def de_match_denylist() -> set[str]:
+    return set(GENRE_LOANWORDS_ON_DE) | set(DE_ENCYCLOPEDIA_GENERIC)
+
+
+def _is_de_bag(bag: dict[str, Any]) -> bool:
+    lang = str(bag.get("language") or "").lower()
+    name = str(bag.get("name") or "").lower()
+    return lang == "de" or name == "plot_de"
+
+
+def _skip_phrase_on_bag(
+    phrase: str,
+    *,
+    bag: dict[str, Any],
+    is_cyr: bool,
+    de_lexicon: set[str],
+    allow_awards_on_de: bool,
+) -> bool:
+    """DE wiki leads only match the German lexicon (or awards, if allowed)."""
+    if not _is_de_bag(bag):
+        return False
+    if is_cyr:
+        return True
+    if phrase in GENRE_LOANWORDS_ON_DE or phrase in DE_ENCYCLOPEDIA_GENERIC:
+        return True
+    if phrase in AWARD_TOKENS_ON_DE:
+        return not allow_awards_on_de
+    if phrase in de_lexicon or _DE_CHAR_RE.search(phrase):
+        return False
+    return True
+
+
+def is_real_de_psych_hit(hit: PhraseHit) -> bool:
+    """True when a DE-bag hit is a German stem / DE-lexicon phrase, not a loanword."""
+    if not _is_de_bag({"language": hit.language, "name": hit.bag}):
+        return False
+    phrase = (hit.phrase or "").lower()
+    if phrase in GENRE_LOANWORDS_ON_DE or phrase in DE_ENCYCLOPEDIA_GENERIC:
+        return False
+    if phrase in AWARD_TOKENS_ON_DE:
+        return False
+    if getattr(hit, "lexicon", "") == "de":
+        return True
+    if _DE_CHAR_RE.search(hit.phrase or ""):
+        return True
+    return False
 
 
 def _normalize_tiers(phrases: Any) -> list[tuple[str, int]]:
@@ -86,6 +212,9 @@ def match_phrases(
     *,
     max_count_per_bag: int = 2,
     allow_t1_alone: bool = False,
+    de_lexicon: Optional[set[str]] = None,
+    allow_awards_on_de: bool = False,
+    de_corroborator: bool = False,
 ) -> tuple[float, list[PhraseHit]]:
     """
     bags: list of {name, text, source, language, weight}
@@ -95,6 +224,7 @@ def match_phrases(
     if not phrase_list:
         return 0.0, []
 
+    de_lex = {p.lower() for p in (de_lexicon or set())}
     bag_list = list(bags)
     hits: list[PhraseHit] = []
     raw = 0.0
@@ -105,13 +235,17 @@ def match_phrases(
         # Skip only very short noise (1–2 chars).
         if len(phrase) < 3:
             continue
-        # Word-boundary for short Latin tokens; substring for Cyrillic stems
-        has_cyr = bool(re.search(r"[а-яё]", phrase, flags=re.I))
-        if has_cyr or len(phrase) <= 4:
-            pat = re.escape(phrase)
-        else:
-            pat = rf"(?<!\w){re.escape(phrase)}(?!\w)"
+        pat, is_cyr = _phrase_pattern(phrase)
+        is_de_lex = phrase in de_lex or bool(_DE_CHAR_RE.search(phrase))
         for bag in bag_list:
+            if _skip_phrase_on_bag(
+                phrase,
+                bag=bag,
+                is_cyr=is_cyr,
+                de_lexicon=de_lex,
+                allow_awards_on_de=allow_awards_on_de,
+            ):
+                continue
             text = (bag.get("text") or "").lower()
             if not text:
                 continue
@@ -132,6 +266,7 @@ def match_phrases(
                     tier=tier,
                     weight=contrib,
                     count=count,
+                    lexicon="de" if is_de_lex else "",
                 )
             )
             raw += contrib
@@ -139,7 +274,14 @@ def match_phrases(
     # T1-only evidence is weak: discount unless allow_t1_alone or T2/T3 also hit
     if hits and not t2_t3_present and not allow_t1_alone:
         raw *= 0.35
-        # keep evidence but mark as weak via lower raw
+
+    # DE wiki is a corroborator: it cannot set a psych/cluster score by itself.
+    if de_corroborator and hits:
+        de_hits = [h for h in hits if _is_de_bag({"language": h.language, "name": h.bag})]
+        other_t2 = [h for h in hits if h not in de_hits and h.tier >= 2]
+        if de_hits and not other_t2:
+            raw -= sum(h.weight for h in de_hits)
+            raw = max(0.0, raw)
 
     # dedupe evidence by phrase+bag (keep max weight)
     best: dict[tuple[str, str], PhraseHit] = {}
@@ -182,10 +324,25 @@ def score_dictionary(
     allow_t1_alone: bool = False,
     cap: Optional[float] = None,
     cap_rule: Optional[str] = None,
+    de_lexicon: Optional[set[str]] = None,
+    allow_awards_on_de: bool = False,
+    de_corroborator: bool = True,
 ) -> ScoreResult:
-    raw, evidence = match_phrases(bags, phrases, allow_t1_alone=allow_t1_alone)
+    raw, evidence = match_phrases(
+        bags,
+        phrases,
+        allow_t1_alone=allow_t1_alone,
+        de_lexicon=de_lexicon,
+        allow_awards_on_de=allow_awards_on_de,
+        de_corroborator=de_corroborator,
+    )
     score = hits_to_score(raw, scale=scale)
     negatives: list[dict[str, Any]] = []
+    if de_corroborator:
+        de_hits = [e for e in evidence if _is_de_bag({"language": e.language, "name": e.bag})]
+        other_t2 = [e for e in evidence if e not in de_hits and e.tier >= 2]
+        if de_hits and not other_t2:
+            negatives.append({"rule": "de_wiki_corroborator_only"})
     if cap is not None and score > cap:
         score = cap
         negatives.append({"rule": cap_rule or "cap", "cap": cap})
@@ -199,10 +356,24 @@ def spectrum_score(
     bags: Iterable[dict[str, Any]],
     machine_phrases: Any,
     spiritual_phrases: Any,
+    *,
+    de_lexicon: Optional[set[str]] = None,
 ) -> ScoreResult:
     """0 = biological machine, 10 = spiritual being; 5 = neutral/ambiguous."""
-    raw_m, ev_m = match_phrases(bags, machine_phrases, allow_t1_alone=True)
-    raw_s, ev_s = match_phrases(bags, spiritual_phrases, allow_t1_alone=True)
+    raw_m, ev_m = match_phrases(
+        bags,
+        machine_phrases,
+        allow_t1_alone=True,
+        de_lexicon=de_lexicon,
+        de_corroborator=True,
+    )
+    raw_s, ev_s = match_phrases(
+        bags,
+        spiritual_phrases,
+        allow_t1_alone=True,
+        de_lexicon=de_lexicon,
+        de_corroborator=True,
+    )
     if raw_m <= 0 and raw_s <= 0:
         return ScoreResult(
             name="Human_Nature_Spectrum",

@@ -269,19 +269,45 @@ def _payload_lb(store: PlanStore, film_index: int) -> SourcePayload:
     return SourcePayload(source="letterboxd", found=False, error="not found")
 
 
+def _unwrap_wiki_page(data: Optional[dict]) -> Optional[dict]:
+    """Normalize wiki_resolve_v2 wrapper or legacy REST summary to a page dict with extract."""
+    if not isinstance(data, dict):
+        return None
+    classification = str(data.get("classification") or "").lower()
+    if data.get("ok") is False or classification in {
+        "not_found",
+        "rate_limit",
+        "error",
+        "failed",
+        "disambiguation",
+    }:
+        return None
+    page = data.get("summary") if isinstance(data.get("summary"), dict) else data
+    if not isinstance(page, dict):
+        return None
+    ptype = str(page.get("type") or "")
+    if ptype in {
+        "https://mediawiki.org/wiki/HyperSwitch/errors/not_found",
+        "disambiguation",
+    }:
+        return None
+    extract = page.get("extract")
+    if not extract or not str(extract).strip():
+        return None
+    out = dict(page)
+    if data.get("final_title") and not out.get("title"):
+        out["title"] = data["final_title"]
+    return out
+
+
 def _load_wiki_lang(store: PlanStore, film_index: int, lang: str) -> Optional[dict]:
     for rid in (
         f"f{film_index:05d}_wikipedia_summary_{lang}",
         f"f{film_index:05d}_wikipedia_summary",  # legacy single-lang id
     ):
-        data = store.load_response(rid)
-        if isinstance(data, dict) and data.get("extract"):
-            if data.get("type") in {
-                "https://mediawiki.org/wiki/HyperSwitch/errors/not_found",
-                "disambiguation",
-            }:
-                continue
-            return data
+        page = _unwrap_wiki_page(store.load_response(rid))
+        if page:
+            return page
     return None
 
 
@@ -327,9 +353,11 @@ def _payload_wiki(store: PlanStore, film_index: int) -> SourcePayload:
         overview=overview_en or overview_ru or overview_de,
         overview_en=overview_en,
         overview_ru=overview_ru,
-        plot=(overview_en or overview_ru or overview_de or "")[:1500] or None,
-        plot_en=(overview_en or "")[:1500] or None,
-        plot_ru=(overview_ru or "")[:1500] or None,
+        overview_de=overview_de,
+        plot=(overview_en or overview_ru or overview_de or "")[:4000] or None,
+        plot_en=(overview_en or "")[:4000] or None,
+        plot_ru=(overview_ru or "")[:4000] or None,
+        plot_de=(overview_de or "")[:4000] or None,
         url=links.get("en") or links.get("ru") or links.get("de"),
         language="en" if en else ("ru" if ru else "de"),
         extra={
@@ -347,14 +375,22 @@ def assemble_profiles(
     store: PlanStore,
     *,
     film_indices: Optional[list[int]] = None,
+    force_sites: Optional[set[str]] = None,
 ) -> list[dict[str, Any]]:
-    """Build gather-style profile dicts (items order). film_indices map to plan film_index."""
+    """Build gather-style profile dicts (items order). film_indices map to plan film_index.
+
+    force_sites: if set, try these sources even when the current request_plan
+    no longer lists that film_index (leftover response files after a later batch).
+    """
     out: list[dict[str, Any]] = []
+    sites_by_idx: dict[int, set[str]] = {}
+    for r in store.all():
+        sites_by_idx.setdefault(int(r.film_index), set()).add(r.site)
+    default_sites = force_sites or {"tmdb", "omdb", "kinopoisk", "letterboxd", "wikipedia"}
     for i, item in enumerate(items):
         idx = int(film_indices[i]) if film_indices is not None else (i + 1)
         payloads: dict[str, SourcePayload] = {}
-        # only include sources that had any request
-        sites = {r.site for r in store.all() if int(r.film_index) == idx}
+        sites = sites_by_idx.get(idx) or (set(default_sites) if force_sites else set())
         if "tmdb" in sites:
             payloads["tmdb"] = _payload_tmdb(store, idx, item)
         if "omdb" in sites:

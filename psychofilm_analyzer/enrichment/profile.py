@@ -76,8 +76,10 @@ class EnrichmentProfile:
     # Text (language-separated)
     plot_en: Optional[str] = None
     plot_ru: Optional[str] = None
+    plot_de: Optional[str] = None
     overview_en: Optional[str] = None
     overview_ru: Optional[str] = None
+    overview_de: Optional[str] = None
     genres: list[str] = field(default_factory=list)
     genres_en: list[str] = field(default_factory=list)
     genres_ru: list[str] = field(default_factory=list)
@@ -157,8 +159,10 @@ class EnrichmentProfile:
             # Evidence texts
             "plot_en": self.plot_en,
             "plot_ru": self.plot_ru,
+            "plot_de": self.plot_de,
             "overview_en": self.overview_en,
             "overview_ru": self.overview_ru,
+            "overview_de": self.overview_de,
             "genres": _join(self.genres),
             "genres_en": _join(self.genres_en),
             "genres_ru": _join(self.genres_ru),
@@ -207,6 +211,7 @@ class EnrichmentProfile:
             # Previews of bags for human review
             "bag_plot_en_preview": self._preview("plot_en"),
             "bag_plot_ru_preview": self._preview("plot_ru"),
+            "bag_plot_de_preview": self._preview("plot_de"),
             "bag_keywords_en_preview": self._preview("keywords_en"),
         }
 
@@ -246,8 +251,8 @@ class EnrichmentProfile:
             "season": self.season,
             "runtime_min": self.runtime_min,
             "countries": {"en": self.countries_en, "ru": self.countries_ru},
-            "plots": {"en": self.plot_en, "ru": self.plot_ru},
-            "overviews": {"en": self.overview_en, "ru": self.overview_ru},
+            "plots": {"en": self.plot_en, "ru": self.plot_ru, "de": self.plot_de},
+            "overviews": {"en": self.overview_en, "ru": self.overview_ru, "de": self.overview_de},
             "genres": {"all": self.genres, "en": self.genres_en, "ru": self.genres_ru},
             "keywords": self.keywords,
             "crew": {
@@ -428,8 +433,24 @@ def build_enrichment_profile(
     if kp and kp.found:
         _add_bag(bags, "plot_ru", kp.plot_ru or kp.plot or kp.overview, "kinopoisk", "ru", 1.0)
     if wiki and wiki.found:
-        _add_bag(bags, "plot_en", wiki.overview_en or (wiki.overview if wiki.language == "en" else None), "wikipedia", "en", 0.9)
-        _add_bag(bags, "plot_ru", wiki.overview_ru, "wikipedia", "ru", 0.9)
+        extra = wiki.extra or {}
+        _add_bag(
+            bags,
+            "plot_en",
+            wiki.overview_en or wiki.plot_en or (wiki.overview if wiki.language == "en" else None),
+            "wikipedia",
+            "en",
+            1.1,
+        )
+        _add_bag(bags, "plot_ru", wiki.overview_ru or wiki.plot_ru, "wikipedia", "ru", 1.1)
+        _add_bag(
+            bags,
+            "plot_de",
+            wiki.overview_de or wiki.plot_de or extra.get("overview_de"),
+            "wikipedia",
+            "de",
+            1.1,
+        )
         if wiki.awards_text:
             _add_awards_bags(bags, wiki.awards_text, "wikipedia", 0.5)
 
@@ -494,6 +515,8 @@ def build_enrichment_profile(
         "letterboxd": bool(lb and lb.found),
         "has_plot_en": any(b.name == "plot_en" for b in bags),
         "has_plot_ru": any(b.name == "plot_ru" for b in bags),
+        "has_plot_de": any(b.name == "plot_de" for b in bags),
+        "wiki_langs": list((wiki.extra or {}).get("langs") or []) if wiki and wiki.found else [],
         "keywords_n": len(keywords),
         "sources_found": len(sources_found),
         "sources_list": sources_found,
@@ -531,8 +554,10 @@ def build_enrichment_profile(
         countries_ru=shell.countries_ru,
         plot_en=shell.plot_en,
         plot_ru=shell.plot_ru,
+        plot_de=getattr(shell, "plot_de", None),
         overview_en=shell.overview_en,
         overview_ru=shell.overview_ru,
+        overview_de=getattr(shell, "overview_de", None),
         genres=shell.genres,
         genres_en=shell.genres_en,
         genres_ru=shell.genres_ru,

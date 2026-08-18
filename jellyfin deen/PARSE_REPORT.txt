@@ -1,0 +1,16 @@
+Jellyfin Deen dump parse
+source 1: films jellyfin deen.txt
+source 2: film jelly add more.txt  (page 501-600 von 2.783)
+list:     films_jellyfin_deen.csv / .xlsx / _list.txt
+add-only: films_jellyfin_deen_add.csv / .xlsx
+catalog:  films_jellyfin_deen_catalog.csv / .xlsx  (page order)
+
+Jellyfin footer said 2.783 films.
+Original dump: 2683 title+year pairs (page 501-600 was missing).
+Add-more page: 100 films, 100 new (overlap 0).
+Combined gather list: 2783
+Catalog-order list:   2783
+Year range add-more: 1999–2001
+
+Gather CSV keeps the original 2683 rows first so Approach 3 inherit
+keys stay stable. The 100 new titles are appended (rows 2685–2784).

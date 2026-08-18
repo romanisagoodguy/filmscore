@@ -1,49 +1,238 @@
 # Phrase-tier dictionaries for PsychoFilm Analyzer v3
 # t3 = strong multi-word, t2 = medium, t1 = weak (needs co-occurrence unless allow_t1_alone)
+#
+# German Wikipedia is a light corroborator, not a third equal language.
+# plot_de may only match de_psych_lexicon / phrases_de / umlaut stems.
+# Award and genre tokens on a DE lead go to Awards_Prestige (or nowhere), never psych.
+
+# Allowlist of German stems that may fire on plot_de. Keep award/genre/encyclopedia
+# generics out of this list (oscar, science, vergangenheit, drama, …).
+de_psych_lexicon:
+  t3:
+    - kindheitstrauma
+    - generationentrauma
+    - vergangenheitsbewältigung
+    - dysfunktionale familie
+    - unzuverlässiger erzähler
+    - psychologisches drama
+    - innerer konflikt
+    - identitätskrise
+    - existenzkrise
+    - kollektivschuld
+    - familiendynamik
+    - seelische wunde
+    - sinn des lebens
+    - heldenreise
+    - volksmärchen
+    - diskussionsstoff
+    - nichtlineare erzählung
+    - offenes ende
+    - bindungstrauma
+    - kindesmissbrauch
+  t2:
+    # already sprinkled in EN/RU lists — must stay allowlisted (no umlaut)
+    - familie
+    - kindheit
+    - missbrauch
+    - vernachlässigung
+    - wahnsinn
+    - psychose
+    - schizophrenie
+    - wahnvorstellung
+    - nervenkrankheit
+    - schattenseite
+    - unbewusstes
+    - familiensystem
+    - elternkomplex
+    - mutterkomplex
+    - bindungstheorie
+    - lebenssinn
+    - sterblichkeit
+    - einsamkeit
+    - totalitarismus
+    - kriegstrauma
+    - massenpsychologie
+    - charakterstudie
+    - psychologisch
+    - seelenleben
+    - charakterzeichnung
+    - bewusstsein
+    - posttraumatisch
+    - trauer
+    - gewalt
+    - schuldgefühl
+    - verwandlung
+    - selbstfindung
+    - erwachsenwerden
+    - jugendlicher
+    - nervenleiden
+    - elternhaus
+    - ehekrise
+    - sinnsuche
+    - erzählstruktur
+    - rückblende
+    - traumlogik
+    - mehrdeutigkeit
+    - symbolik
+    - metapher
+    - allegorie
+    - doppeldeut
+    - polarisiert
+    - kontrovers
+    - philosophisch
+    - moralisch
+    - spirituell
+    - glaube
+    - seele
+    - mystisch
+    - bestimmung
+    - schicksal
+    - archetyp
+    - mythos
+    - zauber
+    - spannend
+    - fesselnd
+    - packend
+    - temporeich
+    - langatmig
+    - schleppend
+    # loanword used as a real German theme word on DE wiki
+    - trauma
+    # new pack (also listed under phrases_de on the owning vector)
+    - adoleszenz
+    - pubertät
+    - identitätssuche
+    - selbstbild
+    - geschlechtsidentität
+    - misshandlung
+    - verwaisung
+    - verdrängung
+    - bindungsstörung
+    - halluzination
+    - dissoziativ
+    - irrsinn
+    - psychiatrie
+    - kollektivunbewusstes
+    - persona
+    - daseinsangst
+    - todesangst
+    - nihilismus
+    - sinnkrise
+    - lebensmitte
+    - völkermord
+    - unterdrückung
+    - kriegsverbrechen
+    - kriegserlebnis
+    - charaktertiefe
+    - unterbewusstsein
+    - seelenkonflikt
+    - überlebender
+    - vergewaltigung
+    - folter
+    - albtraum
+    - verlustschmerz
+    - selbstwerdung
+    - geisteskrankheit
+    - dissoziation
+    - todesfurcht
+    - kollektivgedächtnis
+    - erzählweise
+    - doppelbödig
+    - hintersinn
+    - unheimlich
+    - deutungsangebot
+    - transzendenz
+    - berufung
+    - zaubermärchen
+    - märchenhaft
+    - wissenschaft
+    - forschung
+    - linguistik
+  t1:
+    - jugend
+    - schatten
+    - waise
+    - wahn
+    - maske
+    - reue
+    - opfer
+    - scham
+    - leiden
+    - narbe
+    - hexe
+    - wunde
 
 clusters:
   adolescence_identity:
     name: "Adolescence & Identity Formation"
     phrases:
       t3: ["coming of age", "identity crisis", "queer identity", "gender identity", "self-discovery", "rite of passage"]
-      t2: ["adolescence", "bildungsroman", "first love", "peer pressure", "youth", "teenager", "взросление", "идентичность", "самоопределение"]
-      t1: ["identity", "teen", "school"]
+      t2: ["adolescence", "bildungsroman", "first love", "peer pressure", "youth", "teenager", "взросление", "идентичность", "самоопределение", "erwachsenwerden", "identitätskrise", "identitaetskrise", "selbstfindung", "jugendlicher"]
+      t1: ["identity", "teen", "school", "jugend"]
+    phrases_de:
+      t3: ["geschlechtsidentität", "identitätssuche", "erste liebe"]
+      t2: ["adoleszenz", "pubertät", "selbstbild", "jugendkrise", "selbstwerdung"]
+      t1: ["jugend"]
   childhood_trauma:
     name: "Childhood / Transgenerational Trauma"
     phrases:
       t3: ["childhood trauma", "generational trauma", "intergenerational trauma", "child abuse", "repressed memory", "domestic violence"]
-      t2: ["childhood", "ptsd", "orphan", "family secret", "attachment trauma", "травм", "насили", "жестокост", "детск"]
-      t1: ["abuse", "neglect"]
+      t2: ["childhood", "ptsd", "orphan", "family secret", "attachment trauma", "травм", "насили", "жестокост", "детск", "kindheitstrauma", "missbrauch", "generationentrauma", "vernachlässigung"]
+      t1: ["abuse", "neglect", "trauma"]
+    phrases_de:
+      t3: ["kindesmissbrauch", "transgenerationale trauma", "verdrängte erinnerung", "häusliche gewalt"]
+      t2: ["bindungstrauma", "misshandlung", "verwaisung", "familiäres geheimnis", "trauma"]
+      t1: ["waise"]
   madness_psychosis:
     name: "Madness, Psychosis & Borderline States"
     phrases:
       t3: ["mental breakdown", "unreliable narrator", "multiple personality", "dissociative identity", "psychological thriller", "psychological drama"]
-      t2: ["psychosis", "schizophrenia", "hallucination", "paranoia", "dissociative", "insanity", "madness", "psychiatric", "психоз", "безумие", "шизофрен", "паранои"]
+      t2: ["psychosis", "schizophrenia", "hallucination", "paranoia", "dissociative", "insanity", "madness", "psychiatric", "психоз", "безумие", "шизофрен", "паранои", "wahnsinn", "psychose", "schizophrenie", "wahnvorstellung", "nervenkrankheit"]
       t1: ["delusion", "asylum", "borderline"]
+    phrases_de:
+      t3: ["nervenzusammenbruch", "multiple persönlichkeit", "unzuverlässiger erzähler"]
+      t2: ["halluzination", "dissoziativ", "irrsinn", "psychiatrie", "geisteskrankheit", "dissoziation"]
+      t1: ["wahn"]
   jungian_shadow:
     name: "Jungian Shadow, Persona & Individuation"
     phrases:
       t3: ["collective unconscious", "jungian", "individuation", "doppelganger", "doppelgänger", "alter ego", "dream logic"]
-      t2: ["archetype", "shadow self", "anima", "animus", "surrealist", "surreal", "mythic", "архетип", "индивидуац", "сюрреал"]
-      t1: ["shadow", "symbolic", "mask"]
+      t2: ["archetype", "shadow self", "anima", "animus", "surrealist", "surreal", "mythic", "архетип", "индивидуац", "сюрреал", "individuation", "schattenseite", "unbewusstes", "doppelgänger", "doppelgaenger"]
+      t1: ["shadow", "symbolic", "mask", "schatten"]
+    phrases_de:
+      t3: ["kollektivunbewusstes", "schattenarchetyp"]
+      t2: ["traumlogik", "persona", "archetyp"]
+      t1: ["maske", "schatten"]
   family_attachment:
     name: "Family Systems, Attachment & Parental Complexes"
     phrases:
       t3: ["dysfunctional family", "family system", "mother complex", "father complex", "parental", "family trauma"]
-      t2: ["family", "attachment", "sibling", "divorce", "mother", "father", "сем", "родитель", "привязанност", "мать", "отец"]
-      t1: ["home", "parent"]
+      t2: ["family", "attachment", "sibling", "divorce", "mother", "father", "сем", "родитель", "привязанност", "мать", "отец", "familiensystem", "elternkomplex", "mutterkomplex", "bindungstheorie", "familiendynamik"]
+      t1: ["home", "parent", "familie"]
+    phrases_de:
+      t3: ["dysfunktionale familie", "eltern-kind", "familientrauma"]
+      t2: ["bindungsstörung", "geschwisterbeziehung", "ehekrise", "elternhaus"]
+      t1: ["familie"]
   existential_midlife:
     name: "Existential Crisis, Meaning, Death & Midlife"
     phrases:
       t3: ["existential crisis", "meaning of life", "midlife crisis", "fear of death", "sense of purpose"]
-      t2: ["existential", "mortality", "nihilism", "loneliness", "isolation", "grief", "bereavement", "absurd", "экзистенц", "смысл", "одиночеств", "нигилизм"]
+      t2: ["existential", "mortality", "nihilism", "loneliness", "isolation", "grief", "bereavement", "absurd", "экзистенц", "смысл", "одиночеств", "нигилизм", "existenzkrise", "lebenssinn", "sterblichkeit", "einsamkeit", "midlife"]
       t1: ["freedom", "regret", "aging"]
+    phrases_de:
+      t3: ["sinn des lebens", "todesangst", "daseinsangst"]
+      t2: ["nihilismus", "sinnkrise", "lebensmitte", "trauer", "absurdität"]
+      t1: ["reue"]
   collective_power:
     name: "Collective Unconscious, Power & Historical Psychotypes"
     phrases:
       t3: ["collective guilt", "historical trauma", "mass psychology", "totalitarian", "war crime", "genocide"]
-      t2: ["propaganda", "fascism", "authoritarian", "ideology", "oppression", "revolution", "war", "тоталитар", "идеолог", "пропаганд", "власть"]
+      t2: ["propaganda", "fascism", "authoritarian", "ideology", "oppression", "revolution", "war", "тоталитар", "идеолог", "пропаганд", "власть", "kollektivschuld", "totalitarismus", "kriegstrauma", "massenpsychologie", "vergangenheitsbewältigung"]
       t1: ["power", "nation", "soldier"]
+    phrases_de:
+      t3: ["vergangenheitsbewältigung", "kollektivschuld", "kriegsverbrechen"]
+      t2: ["völkermord", "unterdrückung", "kriegserlebnis", "kriegstrauma", "massenpsychologie"]
+      t1: []
 
 scores:
   Psychological_Depth:
@@ -59,6 +248,9 @@ scores:
         - "психологическ"
         - "внутренний конфликт"
         - "нравственн"
+        - "psychologisches drama"
+        - "charakterstudie"
+        - "innerer konflikt"
       t2:
         - "psychological"
         - "subtext"
@@ -72,7 +264,15 @@ scores:
         - "идентичност"
         - "сознание"
         - "душевы"
+        - "psychologisch"
+        - "seelenleben"
+        - "charakterzeichnung"
+        - "bewusstsein"
       t1: ["drama", "драма", "характер"]
+    phrases_de:
+      t3: ["psychologisches drama", "innerer konflikt", "charakterstudie", "seelische tiefe"]
+      t2: ["charaktertiefe", "unterbewusstsein", "seelenkonflikt", "charakterentwicklung", "seelenleben"]
+      t1: []
   Trauma_Clinical_Relevance:
     phrases:
       t3:
@@ -86,6 +286,9 @@ scores:
         - "посттравмат"
         - "военная травма"
         - "сексуальн"
+        - "kindheitstrauma"
+        - "posttraumatisch"
+        - "kriegstrauma"
       t2:
         # EN lexicon pack v1
         - "trauma"
@@ -119,17 +322,34 @@ scores:
         - "увечь"
         - "ранен"
         - "кошмар"
+        - "missbrauch"
+        - "trauer"
+        - "gewalt"
+        - "vernachlässigung"
+        - "schuldgefühl"
       t1: ["loss", "pain", "боль", "страх"]
+    phrases_de:
+      t3: ["kindheitstrauma", "kindesmissbrauch", "seelische wunde", "trauer und verlust"]
+      t2: ["trauma", "trauer", "überlebender", "vergewaltigung", "folter", "albtraum", "verlustschmerz", "misshandlung", "schuldgefühl"]
+      t1: ["opfer", "scham", "leiden", "narbe", "wunde"]
   Identity_Transformation:
     phrases:
       t3: ["identity crisis", "becomes someone", "self-discovery", "coming of age", "reinvention"]
-      t2: ["transformation", "identity", "becoming", "metamorphosis", "идентичность", "превращен"]
+      t2: ["transformation", "identity", "becoming", "metamorphosis", "идентичность", "превращен", "identitätskrise", "verwandlung", "selbstfindung"]
       t1: ["change", "grow"]
+    phrases_de:
+      t3: ["identitätskrise", "identitätssuche"]
+      t2: ["selbstwerdung", "verwandlung", "erwachsenwerden", "selbstfindung"]
+      t1: []
   Madness_Altered_States:
     phrases:
       t3: ["mental illness", "nervous breakdown", "dissociative", "hallucinations", "descent into madness"]
-      t2: ["madness", "insanity", "psychosis", "delusion", "paranoia", "безумие", "психоз"]
+      t2: ["madness", "insanity", "psychosis", "delusion", "paranoia", "безумие", "психоз", "wahnsinn", "psychose", "wahnvorstellung", "nervenleiden"]
       t1: ["crazy", "mad"]
+    phrases_de:
+      t3: ["nervenzusammenbruch", "abstieg in den wahnsinn", "geisteskrankheit"]
+      t2: ["halluzination", "dissoziation", "irrsinn", "wahnvorstellung"]
+      t1: ["wahn"]
   Family_Systems_Complexity:
     phrases:
       t3:
@@ -140,6 +360,8 @@ scores:
         - "семейная тайна"
         - "дисфункциональн"
         - "семейные отношени"
+        - "familiendynamik"
+        - "dysfunktionale familie"
       t2:
         # EN
         - "family"
@@ -174,17 +396,33 @@ scores:
         - "отношени"
         - "детств"
         - "семей"
+        - "familie"
+        - "elternhaus"
+        - "ehekrise"
+        - "kindheit"
       t1: ["home", "дом", "родител"]
+    phrases_de:
+      t3: ["familiendynamik", "dysfunktionale familie", "familiäres geheimnis", "eltern-kind"]
+      t2: ["familie", "elternhaus", "ehekrise", "kindheit", "geschwisterbeziehung", "bindungsstörung"]
+      t1: []
   Existential_Weight:
     phrases:
       t3: ["meaning of life", "existential crisis", "confrontation with death", "search for meaning"]
-      t2: ["existential", "mortality", "nihilism", "absurd", "purpose", "экзистенц", "смысл"]
+      t2: ["existential", "mortality", "nihilism", "absurd", "purpose", "экзистенц", "смысл", "existenzkrise", "lebenssinn", "sterblichkeit", "sinnsuche"]
       t1: ["death", "alone"]
+    phrases_de:
+      t3: ["sinn des lebens", "konfrontation mit dem tod", "existenzkrise"]
+      t2: ["todesfurcht", "daseinsangst", "sinnsuche", "lebenssinn", "sterblichkeit"]
+      t1: []
   Collective_Historical_Psychotype:
     phrases:
       t3: ["historical trauma", "totalitarian regime", "war atrocity", "collective memory"]
-      t2: ["war", "occupation", "genocide", "fascism", "propaganda", "revolution", "войн", "тоталитар"]
+      t2: ["war", "occupation", "genocide", "fascism", "propaganda", "revolution", "войн", "тоталитар", "kriegstrauma", "totalitarismus", "kollektivschuld", "vergangenheit"]
       t1: ["history", "soldier"]
+    phrases_de:
+      t3: ["vergangenheitsbewältigung", "kollektivschuld", "historische schuld"]
+      t2: ["kriegstrauma", "kollektivgedächtnis", "völkermord", "kriegserlebnis"]
+      t1: []
   Narrative_Craft:
     phrases:
       t3:
@@ -196,6 +434,8 @@ scores:
         - "ненадёжный рассказчик"
         - "ненадежный рассказчик"
         - "параллельные линии"
+        - "unzuverlässiger erzähler"
+        - "nichtlineare erzählung"
       t2:
         # EN
         - "flashback"
@@ -229,7 +469,14 @@ scores:
         - "развязк"
         - "интриг"
         - "загадк"
+        - "rückblende"
+        - "erzählstruktur"
+        - "handlun"
       t1: ["directed", "filmmaking", "постановк", "история"]
+    phrases_de:
+      t3: ["unzuverlässiger erzähler", "nichtlineare erzählung"]
+      t2: ["rückblende", "erzählstruktur", "erzählweise", "erzählperspektive"]
+      t1: []
   # Openness to interpretation / symbolic density (separate from podcast discussability)
   Symbolism_Ambiguity:
     phrases:
@@ -245,6 +492,9 @@ scores:
         - "символическ"
         - "аллегори"
         - "двойной смысл"
+        - "offenes ende"
+        - "traumlogik"
+        - "mehrdeutigkeit"
       t2:
         # EN
         - "symbol"
@@ -282,7 +532,16 @@ scores:
         - "сновид"
         - "видени"
         - "образ"
+        - "symbolik"
+        - "metapher"
+        - "allegorie"
+        - "surreal"
+        - "doppeldeut"
       t1: ["dream", "mask", "mirror", "сон", "маск", "зеркал", "тайна"]
+    phrases_de:
+      t3: ["offenes ende", "traumlogik", "mehrdeutigkeit", "symbolische bildsprache"]
+      t2: ["symbolik", "allegorie", "doppelbödig", "hintersinn", "unheimlich", "doppeldeut"]
+      t1: ["maske"]
   Discussability_Podcast_Potential:
     phrases:
       t3:
@@ -297,6 +556,8 @@ scores:
         - "нравственн"
         - "моральн"
         - "общественный резонанс"
+        - "diskussionsstoff"
+        - "polarisiert"
       t2:
         # EN
         - "controversial"
@@ -337,40 +598,75 @@ scores:
         - "власть"
         - "страх"
         - "любов"
+        - "kontrovers"
+        - "philosophisch"
+        - "moralisch"
+        - "gedankenanstoß"
+        - "gedankenanstoss"
       t1: ["complex", "layered", "сложн", "многослой", "вопрос"]
+    phrases_de:
+      t3: ["diskussionsstoff", "moralisches dilemma", "deutungsangebot"]
+      t2: ["kontrovers", "philosophisch", "moralisch", "gewissensfrage"]
+      t1: []
   Spiritual_Religious_Mystical_Depth:
     phrases:
       t3: ["spiritual journey", "religious faith", "mystical experience", "divine", "sacred ritual"]
-      t2: ["prayer", "faith", "god", "religion", "soul", "spirit", "sacred", "miracle", "духовн", "религ", "бог", "душа"]
+      t2: ["prayer", "faith", "god", "religion", "soul", "spirit", "sacred", "miracle", "духовн", "религ", "бог", "душа", "spirituell", "glaube", "seele", "mystisch"]
       t1: ["church", "temple", "monk"]
+    phrases_de:
+      t3: ["religiöse erfahrung", "mystische erfahrung"]
+      t2: ["transzendenz", "spirituell", "glaube", "seele", "mystisch"]
+      t1: []
   Purpose_Destiny_Meaning_of_Life:
     phrases:
       t3: ["sense of destiny", "life purpose", "calling", "meaning of life"]
-      t2: ["destiny", "fate", "purpose", "vocation", "mission", "судьб", "предназнач", "смысл жизни"]
+      t2: ["destiny", "fate", "purpose", "vocation", "mission", "судьб", "предназнач", "смысл жизни", "lebenssinn", "bestimmung", "schicksal"]
       t1: ["chosen", "path"]
+    phrases_de:
+      t3: ["sinn des lebens", "lebensaufgabe"]
+      t2: ["berufung", "bestimmung", "schicksal", "lebenssinn"]
+      t1: []
   Archetypal_Mythic_Resonance:
     phrases:
       t3: ["hero's journey", "collective unconscious", "archetypal", "mythic quest"]
-      t2: ["archetype", "myth", "hero", "shadow", "trickster", "quest", "архетип", "миф"]
+      t2: ["archetype", "myth", "hero", "shadow", "trickster", "quest", "архетип", "миф", "archetyp", "heldenreise", "mythos"]
       t1: ["legend", "epic"]
+    phrases_de:
+      t3: ["heldenreise", "mythische suche"]
+      t2: ["archetyp", "mythos", "schattenarchetyp"]
+      t1: ["schatten"]
   Fairy_Tale_Folklore_Mystical_Density:
     phrases:
       t3: ["fairy tale", "folk tale", "spirit world", "coming-of-age fantasy"]
-      t2: ["folklore", "witch", "magic", "enchanted", "forest spirit", "сказк", "фольклор", "волшеб"]
+      t2: ["folklore", "witch", "magic", "enchanted", "forest spirit", "сказк", "фольклор", "волшеб", "märchen", "maerchen", "volksmärchen", "zauber"]
       t1: ["fairy", "ghost", "spirit"]
+    phrases_de:
+      t3: ["volksmärchen", "zaubermärchen", "geisterwelt"]
+      t2: ["märchenhaft", "zauber", "waldgeist"]
+      t1: ["hexe"]
   Intellectual_Scientific_Complexity:
     phrases:
       t3: ["scientific theory", "philosophical debate", "quantum", "linguistics", "artificial intelligence"]
       t2: ["science", "physics", "philosophy", "mathematics", "research", "наук", "философ"]
       t1: ["theory", "experiment"]
+    phrases_de:
+      t3: ["wissenschaftliche theorie", "philosophische debatte", "künstliche intelligenz"]
+      t2: ["wissenschaft", "forschung", "linguistik", "mathematik"]
+      t1: []
   machine_nature:
     phrases:
       t2: ["machine", "biology", "genetic", "chemical", "deterministic", "animal instinct", "brain chemistry", "биологи", "генетик", "инстинкт"]
       t1: ["body", "flesh", "instinct", "тело", "плоть"]
+    phrases_de:
+      t2: ["gehirnchemie", "instinkt", "biologisch"]
+      t1: []
   spiritual_nature:
     phrases:
       t2: ["soul", "spirit", "transcendence", "divine spark", "consciousness beyond", "душа", "дух", "трансценд"]
       t1: ["sacred", "holy", "свят", "священ"]
+    phrases_de:
+      t2: ["transzendenz", "seele", "göttlicher funke"]
+      t1: []
   # Pace / engagement language for modern-viewer deliverability (hybrid score in engine)
   modern_deliverability_pace:
     phrases:
@@ -383,6 +679,8 @@ scores:
         - "захватывающий"
         - "держит в напряжении"
         - "не отпускает"
+        - "fesselnder thriller"
+        - "atemberaubend"
       t2:
         - "suspense"
         - "thriller"
@@ -415,7 +713,15 @@ scores:
         - "захватыв"
         - "увлекательн"
         - "зрелищн"
+        - "spannend"
+        - "fesselnd"
+        - "packend"
+        - "temporeich"
       t1: ["suspenseful", "thrilling", "fun", "pace", "темп", "драйв"]
+    phrases_de:
+      t3: ["fesselnder thriller", "nervenaufreibend"]
+      t2: ["spannend", "wendungsreich", "kurzweilig"]
+      t1: []
   modern_deliverability_drag:
     phrases:
       t3:
@@ -445,7 +751,15 @@ scores:
         - "тягуч"
         - "бессюжет"
         - "созерцательн"
+        - "langatmig"
+        - "schleppend"
+        - "eintönig"
+        - "eintoenig"
       t1: ["static", "sparse", "austere", "вял"]
+    phrases_de:
+      t3: ["langsam erzählt"]
+      t2: ["ereignislos", "langweilig", "meditatives tempo"]
+      t1: []
 
   # Awards / festival prestige (phrase + structured awards_text scoring in engine)
   Awards_Prestige:
@@ -460,6 +774,10 @@ scores:
         - "золотая пальмовая ветвь"
         - "золотой лев"
         - "золотой медведь"
+        - "goldener bär"
+        - "goldener baer"
+        - "goldener löwe"
+        - "goldene palme"
       t2:
         - "oscar"
         - "academy awards"
@@ -483,6 +801,10 @@ scores:
         - "премия"
         - "лауреат"
       t1: ["award", "festival", "won", "преми", "фестивал", "наград"]
+    phrases_de:
+      t3: ["goldener bär", "goldener löwe", "goldene palme"]
+      t2: ["berlinale", "filmpreis oscar"]
+      t1: []
 
 field_maps:
   archetypes:

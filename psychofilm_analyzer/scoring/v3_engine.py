@@ -11,11 +11,53 @@ import yaml
 from psychofilm_analyzer.config import ROOT
 from psychofilm_analyzer.scoring.fields_v3 import extract_all_fields
 from psychofilm_analyzer.scoring.phrase_engine import (
+    AWARD_TOKENS_ON_DE,
     ScoreResult,
+    _normalize_tiers,
+    de_match_denylist,
+    is_real_de_psych_hit,
     score_dictionary,
     spectrum_score,
 )
 from psychofilm_analyzer.utils.localtime import now_str, stamp_local
+
+
+def collect_de_lexicon(dicts: dict) -> set[str]:
+    """Union of explicit German packs + umlaut phrases already in the EN/RU lists.
+
+    Award / genre / encyclopedia-generic tokens are stripped so they cannot
+    sneak onto plot_de as psych evidence.
+    """
+    out: set[str] = set()
+    de_block = dicts.get("de_psych_lexicon") or {}
+    for p, _t in _normalize_tiers(de_block):
+        out.add(p)
+    for group in ((dicts.get("clusters") or {}), (dicts.get("scores") or {})):
+        for block in group.values():
+            if not isinstance(block, dict):
+                continue
+            for p, _t in _normalize_tiers(block.get("phrases_de")):
+                out.add(p)
+            for p, _t in _normalize_tiers(block.get("phrases")):
+                if re.search(r"[äöüß]", p, flags=re.I):
+                    out.add(p)
+    deny = de_match_denylist() | {t.lower() for t in AWARD_TOKENS_ON_DE}
+    return {p for p in out if p not in deny}
+
+
+def _merge_phrases(sdef: Any) -> Any:
+    if not isinstance(sdef, dict):
+        return sdef
+    base = sdef.get("phrases")
+    extra = sdef.get("phrases_de")
+    if not extra:
+        return base if base is not None else sdef
+    if isinstance(base, dict) and isinstance(extra, dict):
+        out: dict[str, list[str]] = {}
+        for key in ("t3", "t2", "t1"):
+            out[key] = list(base.get(key) or []) + list(extra.get(key) or [])
+        return out
+    return base
 
 
 def load_dictionaries_v3(path: Optional[Path] = None) -> dict:
@@ -45,6 +87,8 @@ def _profile_bags(profile: dict) -> list[dict]:
         # Kinopoisk RU narrative is first-class for this catalog
         if bb.get("source") == "kinopoisk" and bb.get("language") == "ru":
             bb["weight"] = max(float(bb.get("weight") or 1.0), 1.15)
+        if bb.get("source") == "wikipedia" and bb.get("language") in {"en", "ru", "de"}:
+            bb["weight"] = max(float(bb.get("weight") or 1.0), 1.1)
         bags.append(bb)
 
     def _has(name: str) -> bool:
@@ -80,6 +124,14 @@ def _profile_bags(profile: dict) -> list[dict]:
             "profile",
             "ru",
             1.15,
+        )
+    if not _has("plot_de") and (plots.get("de") or overviews.get("de") or profile.get("plot_de")):
+        _add(
+            "plot_de",
+            plots.get("de") or overviews.get("de") or profile.get("plot_de"),
+            "profile",
+            "de",
+            1.1,
         )
     if not _has("keywords_en"):
         kws = profile.get("keywords")
@@ -149,8 +201,9 @@ def _score_modern_viewer_deliverability(
       - Content floor (Depth + Narrative) so empty thrills cannot max out
     """
     score_defs = dicts.get("scores") or {}
-    pace_phrases = (score_defs.get("modern_deliverability_pace") or {}).get("phrases")
-    drag_phrases = (score_defs.get("modern_deliverability_drag") or {}).get("phrases")
+    de_lexicon = collect_de_lexicon(dicts)
+    pace_phrases = _merge_phrases(score_defs.get("modern_deliverability_pace") or {})
+    drag_phrases = _merge_phrases(score_defs.get("modern_deliverability_drag") or {})
 
     pace_sr = score_dictionary(
         "modern_deliverability_pace",
@@ -158,6 +211,9 @@ def _score_modern_viewer_deliverability(
         pace_phrases,
         scale=2.6,
         allow_t1_alone=True,
+        de_lexicon=de_lexicon,
+        allow_awards_on_de=False,
+        de_corroborator=True,
     )
     drag_sr = score_dictionary(
         "modern_deliverability_drag",
@@ -165,6 +221,9 @@ def _score_modern_viewer_deliverability(
         drag_phrases,
         scale=2.4,
         allow_t1_alone=True,
+        de_lexicon=de_lexicon,
+        allow_awards_on_de=False,
+        de_corroborator=True,
     )
 
     def g(n: str) -> float:
@@ -247,8 +306,17 @@ def _score_awards_prestige(profile: dict, bags: list[dict], dicts: dict) -> Scor
       - phrase hits on awards bags + plot mentions (dictionary Awards_Prestige)
       - structured parse of awards_text (Oscar / festival ladders, RU awards)
     """
-    phrases = ((dicts.get("scores") or {}).get("Awards_Prestige") or {}).get("phrases")
-    phrase_sr = score_dictionary("Awards_Prestige", bags, phrases, scale=2.8, allow_t1_alone=True)
+    phrases = _merge_phrases((dicts.get("scores") or {}).get("Awards_Prestige") or {})
+    phrase_sr = score_dictionary(
+        "Awards_Prestige",
+        bags,
+        phrases,
+        scale=2.8,
+        allow_t1_alone=True,
+        de_lexicon=collect_de_lexicon(dicts),
+        allow_awards_on_de=True,
+        de_corroborator=False,
+    )
 
     texts: list[str] = []
     if profile.get("awards_text"):
@@ -331,6 +399,7 @@ def _is_doc(profile: dict) -> bool:
 def score_profile(profile: dict, dicts: Optional[dict] = None) -> dict[str, Any]:
     """Score one gather profile; returns full v3 result dict."""
     dicts = dicts or load_dictionaries_v3()
+    de_lexicon = collect_de_lexicon(dicts)
     bags = _profile_bags(profile)
     # ensure bags attached for field extractor
     profile = dict(profile)
@@ -363,7 +432,7 @@ def score_profile(profile: dict, dicts: Optional[dict] = None) -> dict[str, Any]
             "modern_deliverability_drag",
         ):
             continue
-        phrases = (sdef or {}).get("phrases") or sdef
+        phrases = _merge_phrases(sdef) if isinstance(sdef, dict) else ((sdef or {}).get("phrases") or sdef)
         # psych family gets spectacle/doc caps
         is_psych = sname in {
             "Psychological_Depth",
@@ -384,6 +453,9 @@ def score_profile(profile: dict, dicts: Optional[dict] = None) -> dict[str, Any]
             scale=scale,
             cap=psych_cap if is_psych else None,
             cap_rule=cap_rule if is_psych else None,
+            de_lexicon=de_lexicon,
+            allow_awards_on_de=False,
+            de_corroborator=True,
         )
 
     scores["Awards_Prestige"] = _score_awards_prestige(profile, bags, dicts)
@@ -391,8 +463,9 @@ def score_profile(profile: dict, dicts: Optional[dict] = None) -> dict[str, Any]
     # Human nature spectrum
     scores["Human_Nature_Spectrum"] = spectrum_score(
         bags,
-        (score_defs.get("machine_nature") or {}).get("phrases"),
-        (score_defs.get("spiritual_nature") or {}).get("phrases"),
+        _merge_phrases(score_defs.get("machine_nature") or {}),
+        _merge_phrases(score_defs.get("spiritual_nature") or {}),
+        de_lexicon=de_lexicon,
     )
 
     # Watchability (hybrid rules)
@@ -507,10 +580,13 @@ def score_profile(profile: dict, dicts: Optional[dict] = None) -> dict[str, Any]
         cluster_scores[name] = score_dictionary(
             name,
             bags,
-            cdef.get("phrases"),
+            _merge_phrases(cdef),
             scale=2.0,
             cap=psych_cap,
             cap_rule=cap_rule,
+            de_lexicon=de_lexicon,
+            allow_awards_on_de=False,
+            de_corroborator=True,
         )
 
     # Primary / secondary
@@ -603,6 +679,7 @@ def score_profile(profile: dict, dicts: Optional[dict] = None) -> dict[str, Any]
     bag_lines: list[str] = []
     plot_en_parts: list[str] = []
     plot_ru_parts: list[str] = []
+    plot_de_parts: list[str] = []
     for b in bags:
         name = b.get("name") or "?"
         src = b.get("source") or "?"
@@ -615,12 +692,17 @@ def score_profile(profile: dict, dicts: Optional[dict] = None) -> dict[str, Any]
             plot_en_parts.append(text)
         if name == "plot_ru" and text not in plot_ru_parts:
             plot_ru_parts.append(text)
+        if name == "plot_de" and text not in plot_de_parts:
+            plot_de_parts.append(text)
 
     # Prefer concatenated multi-source plots when available (TMDB+KP+Wiki)
     if plot_en_parts:
         plot_en = "\n---\n".join(plot_en_parts)
     if plot_ru_parts:
         plot_ru = "\n---\n".join(plot_ru_parts)
+    plot_de = "\n---\n".join(plot_de_parts) if plot_de_parts else (
+        (plots.get("de") if isinstance(plots, dict) else None) or profile.get("plot_de")
+    )
 
     flat = {
         "imported_file": imported.get("file") or pick("imported_file"),
@@ -644,8 +726,10 @@ def score_profile(profile: dict, dicts: Optional[dict] = None) -> dict[str, Any]
         # --- SOURCE TEXT (reference — do not drop; used to verify judgments) ---
         "plot_en": plot_en,
         "plot_ru": plot_ru,
+        "plot_de": plot_de,
         "overview_en": overview_en,
         "overview_ru": overview_ru,
+        "overview_de": overviews.get("de") or pick("overview_de") or plot_de,
         "awards_text": awards_text,
         "keywords": keywords_txt,
         "genres_en": "; ".join(genres.get("en") or []) if isinstance(genres.get("en"), list) else pick("genres_en"),
@@ -654,6 +738,7 @@ def score_profile(profile: dict, dicts: Optional[dict] = None) -> dict[str, Any]
         "bags_n": len(bags),
         "has_plot_en": bool(plot_en),
         "has_plot_ru": bool(plot_ru),
+        "has_plot_de": bool(plot_de),
         "has_awards_text": bool(awards_text),
         "directors_en": "; ".join(crew.get("directors_en") or []) if isinstance(crew.get("directors_en"), list) else pick("directors_en"),
         "directors_ru": "; ".join(crew.get("directors_ru") or []) if isinstance(crew.get("directors_ru"), list) else pick("directors_ru"),
@@ -670,6 +755,7 @@ def score_profile(profile: dict, dicts: Optional[dict] = None) -> dict[str, Any]
         "link_kinopoisk": links.get("kinopoisk") or pick("link_kinopoisk"),
         "link_wikipedia_en": links.get("wikipedia_en") or pick("link_wikipedia_en"),
         "link_wikipedia_ru": links.get("wikipedia_ru") or pick("link_wikipedia_ru"),
+        "link_wikipedia_de": links.get("wikipedia_de") or pick("link_wikipedia_de"),
         "primary_theme": primary,
         "secondary_theme": secondary,
         "theme_confidence": theme_confidence,
@@ -717,8 +803,11 @@ def score_profile(profile: dict, dicts: Optional[dict] = None) -> dict[str, Any]
         "source_text": {
             "plot_en": plot_en,
             "plot_ru": plot_ru,
+            "plot_de": plot_de,
             "overview_en": overview_en,
             "overview_ru": overview_ru,
+            "overview_de": overviews.get("de") or plot_de,
+            "has_plot_de": bool(plot_de),
             "awards_text": awards_text,
             "keywords": keywords_txt,
             "bag_inventory": flat.get("bag_inventory"),
@@ -849,12 +938,13 @@ def _argumentation_for_score(
     elif kind == "cluster":
         parts.append(
             "Method: weighted phrase tiers T3/T2/T1 over evidence bags "
-            "(plots EN/RU, keywords, genres, awards); T1-only hits are discounted."
+            "(plots EN/RU/DE; German Wikipedia is corroboration only); "
+            "T1-only hits are discounted."
         )
     else:
         parts.append(
             "Method: dictionary phrase matching (T3 strong multi-word, T2 medium, T1 weak) "
-            "across EN+RU evidence bags (plot_en, plot_ru/Kinopoisk, keywords, genres, awards)."
+            "across EN+RU+DE evidence bags (plot_en, plot_ru/Kinopoisk, plot_de/Wikipedia-DE, keywords, genres, awards)."
         )
 
     # Evidence story
@@ -891,9 +981,23 @@ def _argumentation_for_score(
         )
         parts.append(f"Key citations: {cite}.")
         if any((e.language or "") == "ru" for e in ev):
-            parts.append("Russian source text (e.g. Kinopoisk/TMDB-RU) contributed to this judgment.")
-        if any((e.language or "") == "en" for e in ev) and any((e.language or "") == "ru" for e in ev):
+            parts.append("Russian source text (e.g. Kinopoisk/TMDB-RU/Wikipedia-RU) contributed to this judgment.")
+        de_psych = [e for e in ev if is_real_de_psych_hit(e)]
+        de_psych_strong = [e for e in de_psych if e.tier >= 2]
+        # Trilingual needs a real German stem (any tier) or a T2+ DE-lexicon hit.
+        de_for_trilingual = de_psych_strong or de_psych
+        if de_for_trilingual:
+            parts.append(
+                "German Wikipedia contributed a real DE-lexicon stem "
+                f"(«{de_for_trilingual[0].phrase}») — corroboration, not a solo ranking driver."
+            )
+        langs_hit = {(e.language or "") for e in ev}
+        if {"en", "ru"} <= langs_hit and de_for_trilingual:
+            parts.append("EN, RU and a German-lexicon DE hit → trilingual support.")
+        elif {"en", "ru"} <= langs_hit:
             parts.append("EN and RU bags both fired → cross-language support.")
+        elif de_for_trilingual and ({"en", "de"} <= langs_hit or {"ru", "de"} <= langs_hit):
+            parts.append("EN/RU plus a German-lexicon DE hit → bilingual corroboration.")
 
     # Caps / negatives
     if result.negatives:
