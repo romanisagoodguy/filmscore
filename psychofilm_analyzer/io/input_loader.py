@@ -87,9 +87,9 @@ def _detect_media_type(raw: Optional[str], title: str, season: Optional[int]) ->
     if season is not None:
         return MediaType.SEASON
     t = (raw or "").strip().lower()
-    if t in {"film", "movie", "фильм", "кино"}:
+    if t in {"film", "movie", "фильм", "кино", "cartoon", "3d_film", "3d_cartoon", "concert", "documentary", "3d_documentary"}:
         return MediaType.FILM
-    if t in {"series", "tv", "show", "сериал"}:
+    if t in {"series", "tv", "show", "сериал", "animated_series", "tv_program"}:
         return MediaType.SERIES
     if t in {"season", "сезон"}:
         return MediaType.SEASON

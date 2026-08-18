@@ -1,0 +1,16 @@
+# Approach 3 for kinemateka/media_occurrences_en.csv
+# Wikipedia shared cap ≈ 180 RPM.
+gather_v2:
+  wikipedia_adaptive_rpm:
+    min_rpm: 5.0
+    max_rpm: 180.0
+    max_rpm_parallel: 180.0
+    initial_rpm: 60.0
+    step_rpm: 10.0
+    success_batch: 8
+  site_delays_sec:
+    wikipedia: 1.0   # start ~60 RPM; adaptive may climb only to 180
+
+http:
+  host_rate_limits_per_min:
+    wikipedia.org: 180

@@ -7,6 +7,8 @@ __pycache__/
 venv/
 cache/
 output/
+kinemateka_hdd/
+spisok02_hdd/
 *.log
 *.tmp
 .DS_Store
